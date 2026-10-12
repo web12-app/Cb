@@ -1,64 +1,32 @@
-name: Run Release Tag Shell
+name: Check Git Tags
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Git release tag (example: v1.0.0)"
-        required: true
-        type: string
-      script:
-        description: "Shell script path in the tagged source"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
-  run-tag-script:
+  check:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Release Tag
+      - name: Checkout Main
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: main
           fetch-depth: 0
+          fetch-tags: true
 
-      - name: List Tagged Source Files
+      - name: List Branches and Tags
         run: |
-          echo "Checked out tag:"
-          git describe --tags --exact-match
-          echo "Repository path:"
-          pwd
-          echo "Files:"
-          git ls-tree -r --name-only HEAD
+          echo "=== Remote Tags ==="
+          git ls-remote --tags origin
 
-      - name: Run Selected Shell Script
-        env:
-          SCRIPT: ${{ inputs.script }}
-        run: |
-          set -e
+          echo ""
+          echo "=== Local Tags ==="
+          git tag --list
 
-          case "$SCRIPT" in
-            *.sh) ;;
-            *)
-              echo "Only .sh files are allowed"
-              exit 1
-              ;;
-          esac
-
-          case "/$SCRIPT/" in
-            *"/../"*|//*)
-              echo "Invalid script path"
-              exit 1
-              ;;
-          esac
-
-          if [ ! -f "$SCRIPT" ]; then
-            echo "Script not found: $SCRIPT"
-            exit 1
-          fi
-
-          bash "$SCRIPT"
+          echo ""
+          echo "=== Latest Commits ==="
+          git log -5 --oneline
