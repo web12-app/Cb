@@ -1,0 +1,64 @@
+name: Run Release Tag Shell
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git release tag (example: v1.0.0)"
+        required: true
+        type: string
+      script:
+        description: "Shell script path in the tagged source"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run-tag-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Release Tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: List Tagged Source Files
+        run: |
+          echo "Checked out tag:"
+          git describe --tags --exact-match
+          echo "Repository path:"
+          pwd
+          echo "Files:"
+          git ls-tree -r --name-only HEAD
+
+      - name: Run Selected Shell Script
+        env:
+          SCRIPT: ${{ inputs.script }}
+        run: |
+          set -e
+
+          case "$SCRIPT" in
+            *.sh) ;;
+            *)
+              echo "Only .sh files are allowed"
+              exit 1
+              ;;
+          esac
+
+          case "/$SCRIPT/" in
+            *"/../"*|//*)
+              echo "Invalid script path"
+              exit 1
+              ;;
+          esac
+
+          if [ ! -f "$SCRIPT" ]; then
+            echo "Script not found: $SCRIPT"
+            exit 1
+          fi
+
+          bash "$SCRIPT"
