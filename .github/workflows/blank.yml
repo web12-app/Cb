@@ -1,32 +1,77 @@
-name: Check Git Tags
+name: Run Git Tag Shell
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag name"
+        required: true
+        default: "1.0.0"
+      script:
+        description: "Shell file path inside the selected tag"
+        required: true
+        default: "run.sh"
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Main
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
           fetch-tags: true
 
-      - name: List Branches and Tags
+      - name: Find and Checkout Tag
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          echo "=== Remote Tags ==="
-          git ls-remote --tags origin
+          set -e
 
-          echo ""
-          echo "=== Local Tags ==="
+          git fetch origin --tags
+
+          echo "Available tags:"
           git tag --list
 
-          echo ""
-          echo "=== Latest Commits ==="
-          git log -5 --oneline
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag not found: $TAG"
+            exit 1
+          fi
+
+          git checkout --detach "refs/tags/$TAG"
+
+      - name: List Files
+        run: |
+          echo "Current directory:"
+          pwd
+
+          echo "Tag files:"
+          git ls-tree -r --name-only HEAD
+
+      - name: Run Shell Script
+        env:
+          SCRIPT: ${{ inputs.script }}
+        run: |
+          set -e
+
+          if [[ "$SCRIPT" != *.sh ]]; then
+            echo "Only .sh files are allowed"
+            exit 1
+          fi
+
+          if [[ "$SCRIPT" == /* || "$SCRIPT" == *".."* ]]; then
+            echo "Invalid script path"
+            exit 1
+          fi
+
+          if [[ ! -f "$SCRIPT" ]]; then
+            echo "Script not found: $SCRIPT"
+            exit 1
+          fi
+
+          bash "$SCRIPT"
