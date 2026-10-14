@@ -754,6 +754,16 @@
               directLink.textContent = "Direct video link";
               directLink.title = info.downloadUrl;
               directLink.setAttribute("download", info.filename || "");
+
+              if (typeof info.audioUrl === "string" && info.audioUrl) {
+                const audioLink = document.createElement("a");
+                audioLink.className = "download-link";
+                audioLink.rel = "noopener noreferrer";
+                audioLink.href = info.audioUrl;
+                audioLink.textContent = "Direct audio link";
+                audioLink.title = info.audioUrl;
+                result.appendChild(audioLink);
+              }
             } else {
               directLink.remove();
             }

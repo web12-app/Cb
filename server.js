@@ -32,11 +32,12 @@ const DOWNLOAD_MAX_BYTES =
     : 16 * 1024 * 1024;
 const DEFAULT_DOWNLOAD_FORMAT =
   process.env.DOWNLOAD_FORMAT ||
-  "bv*[height<=360]+ba/b[height<=360]/bv*+ba/b";
-// For ?direct=1 we only need a URL, so pick a selector that resolves to a single
-// stream (progressive if available, otherwise the best video-only track).
+  "bv*[height<=2160]+ba/b[height<=2160]/bv*+ba/b";
+// For ?direct=1 we only need URL(s): prefer a single muxed file, otherwise
+// resolve the best video+audio pair (up to 4K).
 const DIRECT_DOWNLOAD_FORMAT =
-  process.env.DIRECT_DOWNLOAD_FORMAT || "bv*[height<=360]/b[height<=360]/bv*/b";
+  process.env.DIRECT_DOWNLOAD_FORMAT ||
+  "b[height<=2160]/bv*[height<=2160]+ba/bv*+ba/b";
 
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
@@ -744,6 +745,7 @@ app.get("/yt", rateLimit, async (req, res) => {
           success: true,
           requestId,
           downloadUrl: urls[0],
+          audioUrl: urls[1] || null,
           filename: directFilename,
           urls
         });
