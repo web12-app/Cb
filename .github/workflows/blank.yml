@@ -1,4 +1,4 @@
-name: YouTube Downloader
+name: YouTube Video Downloader
 
 on:
   workflow_dispatch:
@@ -7,15 +7,17 @@ on:
         description: "YouTube video URL"
         required: true
         type: string
-      format:
-        description: "Video quality"
+
+      quality:
+        description: "Select video quality"
         required: true
         type: choice
         options:
-          - "best"
           - "2160p"
           - "1440p"
           - "1080p"
+          - "720p"
+          - "best"
         default: "2160p"
 
 permissions:
@@ -23,6 +25,7 @@ permissions:
 
 jobs:
   download:
+    name: Download YouTube Video
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -30,35 +33,99 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          python3 -m pip install -U yt-dlp --break-system-packages
+          sudo apt-get install -y ffmpeg curl ca-certificates
+          python3 -m pip install --upgrade yt-dlp --break-system-packages
 
-      - name: Download YouTube video
+      - name: Install Deno JavaScript runtime
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Verify tools
+        run: |
+          echo "yt-dlp version:"
+          yt-dlp --version
+
+          echo "Deno version:"
+          deno --version
+
+          echo "FFmpeg version:"
+          ffmpeg -version | head -n 1
+
+      - name: Validate video URL
         env:
           VIDEO_URL: ${{ inputs.video_url }}
-          QUALITY: ${{ inputs.format }}
         run: |
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          url = os.environ.get("VIDEO_URL", "").strip()
+          parsed = urlparse(url)
+
+          allowed_hosts = {
+              "youtube.com",
+              "www.youtube.com",
+              "m.youtube.com",
+              "music.youtube.com",
+              "youtu.be",
+              "www.youtube-nocookie.com",
+          }
+
+          if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+              raise SystemExit("Error: Enter a valid HTTPS YouTube URL.")
+
+          print("YouTube URL validation passed.")
+          PY
+
+      - name: Download video
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+          QUALITY: ${{ inputs.quality }}
+        run: |
+          set -euo pipefail
           mkdir -p downloads
 
           case "$QUALITY" in
             2160p) HEIGHT=2160 ;;
             1440p) HEIGHT=1440 ;;
             1080p) HEIGHT=1080 ;;
-            *) HEIGHT=4320 ;;
+            720p)  HEIGHT=720 ;;
+            best)  HEIGHT=4320 ;;
+            *) echo "Unsupported quality"; exit 1 ;;
           esac
+
+          echo "Requested maximum height: ${HEIGHT}p"
 
           yt-dlp \
             --no-playlist \
+            --js-runtimes deno \
+            --no-overwrites \
             --max-filesize 5G \
-            -f "bestvideo[height<=${HEIGHT}]+bestaudio/best[height<=${HEIGHT}]" \
+            --format "bestvideo[height<=${HEIGHT}]+bestaudio/best[height<=${HEIGHT}]" \
             --merge-output-format mp4 \
-            -o "downloads/%(title).150s.%(ext)s" \
+            --output "downloads/%(title).150s.%(ext)s" \
+            --print "after_move:filepath" \
             "$VIDEO_URL"
 
-      - name: Upload downloaded video
+      - name: Verify downloaded file
+        run: |
+          set -euo pipefail
+
+          if ! find downloads -maxdepth 1 -type f \
+              \( -name '*.mp4' -o -name '*.mkv' -o -name '*.webm' \) \
+              -print -quit | grep -q .; then
+            echo "Error: No video file was downloaded."
+            exit 1
+          fi
+
+          echo "Downloaded files:"
+          find downloads -maxdepth 1 -type f -printf '%f (%s bytes)\n'
+
+      - name: Upload video artifact
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-video
-          path: downloads/
+          name: youtube-video-${{ inputs.quality }}
+          path: downloads/*
           if-no-files-found: error
           retention-days: 2
