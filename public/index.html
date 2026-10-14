@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CB Download Proxy</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: #101116;
+      color: #f5f5f7;
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 480px;
+      padding: 28px;
+      border: 1px solid #343640;
+      border-radius: 22px;
+      background: #1a1b22;
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 26px;
+    }
+
+    p {
+      color: #b5b6c2;
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      margin: 20px 0 8px;
+    }
+
+    input, select, button {
+      width: 100%;
+      min-height: 48px;
+      padding: 12px;
+      border-radius: 10px;
+      font: inherit;
+    }
+
+    input, select {
+      border: 1px solid #41434e;
+      background: #111218;
+      color: white;
+    }
+
+    button {
+      margin-top: 20px;
+      border: 0;
+      background: #7164ff;
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: .6;
+      cursor: wait;
+    }
+
+    #status {
+      overflow-wrap: anywhere;
+      margin-top: 18px;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="card">
+    <h1>CB Download Proxy</h1>
+
+    <p>
+      Enter a YouTube URL and select the maximum video
+      resolution supported by the source.
+    </p>
+
+    <form id="downloadForm">
+      <label for="url">YouTube URL</label>
+      <input
+        id="url"
+        type="url"
+        placeholder="https://youtu.be/..."
+        required
+      >
+
+      <label for="quality">Video quality</label>
+      <select id="quality">
+        <option value="720p">720p</option>
+        <option value="1080p" selected>1080p</option>
+        <option value="1440p">1440p (2K)</option>
+        <option value="2160p">2160p (4K)</option>
+      </select>
+
+      <button id="submitButton" type="submit">
+        Prepare Download
+      </button>
+    </form>
+
+    <p id="status" role="status"></p>
+  </main>
+
+  <script>
+    const form = document.getElementById("downloadForm");
+    const button = document.getElementById("submitButton");
+    const statusBox = document.getElementById("status");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      button.disabled = true;
+      statusBox.textContent = "Checking request...";
+
+      try {
+        const response = await fetch("/api/download", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            url: document.getElementById("url").value.trim(),
+            quality: document.getElementById("quality").value
+          })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Request failed.");
+        }
+
+        if (data.downloadUrl) {
+          const link = document.createElement("a");
+          link.href = data.downloadUrl;
+          link.textContent = "Download video";
+          link.rel = "noopener";
+          statusBox.replaceChildren(link);
+        } else {
+          statusBox.textContent =
+            data.message || "No download link was returned.";
+        }
+      } catch (error) {
+        statusBox.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
