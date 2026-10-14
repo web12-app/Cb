@@ -769,13 +769,46 @@
         actions.className = "download-actions";
         result.appendChild(actions);
 
-        // Merged video+audio, streamed by the server.
-        const mergedBtn = document.createElement("a");
+        // Merged video+audio via the mix API (async job -> download link).
+        const mergedBtn = document.createElement("button");
+        mergedBtn.type = "button";
         mergedBtn.className = "download-btn";
-        mergedBtn.href = `${API_BASE}/yt?=${encodeURIComponent(url)}`;
         mergedBtn.textContent = "Download video + audio";
-        mergedBtn.rel = "noopener noreferrer";
         actions.appendChild(mergedBtn);
+
+        mergedBtn.addEventListener("click", async () => {
+          mergedBtn.disabled = true;
+          mergedBtn.textContent = "Merging...";
+
+          try {
+            const job = await requestJSON(`${API_BASE}/api/mix`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url })
+            });
+
+            for (let i = 0; i < 60; i++) {
+              const state = await requestJSON(`${API_BASE}/api/mix/${job.id}`);
+
+              if (state.status === "ready") {
+                window.location.href = `${API_BASE}${state.downloadUrl}`;
+                return;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+            }
+
+            throw new ApiError("The merge is taking too long.", {
+              reason: "merge_timeout",
+              phase: "api"
+            });
+          } catch (error) {
+            renderError(error);
+          } finally {
+            mergedBtn.disabled = false;
+            mergedBtn.textContent = "Download video + audio";
+          }
+        });
 
         // Direct CDN links (resolved on the server, no tunnel size cap).
         const videoBtn = document.createElement("a");

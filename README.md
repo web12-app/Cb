@@ -45,6 +45,10 @@ Full tunnel documentation: <https://precision-pledge-fled.ngrok-free.dev/docs/tu
   always split, so the JSON carries the separate video and audio URLs. Handy when the server's IP is
   blocked by YouTube but the visitor's is not.
 - Set `YTDLP_COOKIES` to a Netscape cookies file when YouTube shows a bot check.
+- `POST /api/mix` — `{"url":"https://youtu.be/…","format?":"…"}` starts a background yt-dlp+ffmpeg
+  merge and answers immediately with `202 {id, downloadUrl:"/mix/<id>", statusUrl}`. Poll
+  `GET /api/mix/<id>` for `processing | ready | failed`, then fetch the merged video+audio file from
+  `GET /mix/<id>`. Files are kept for `MIX_TTL_MS` (default 10 min).
 
 ## Run locally
 

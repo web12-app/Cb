@@ -1042,6 +1042,265 @@ app.get("/yt", rateLimit, async (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Mixed (merged) download API.
+//   POST /api/mix        {"url":"...","format?":"..."} -> 202 {id, downloadUrl}
+//   GET  /api/mix/:id    -> status JSON (processing | ready | failed)
+//   GET  /mix/:id        -> the merged video+audio file once ready
+// The merge runs in the background (yt-dlp + ffmpeg), so the API answers right
+// away with a download link and the link serves the file when it is ready.
+// ---------------------------------------------------------------------------
+const MIX_TTL_MS =
+  Number(process.env.MIX_TTL_MS) > 0 ? Number(process.env.MIX_TTL_MS) : 10 * 60 * 1000;
+
+const mixes = new Map();
+
+function startMix(videoUrl, format) {
+  const id = crypto.randomBytes(8).toString("hex");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-mix-"));
+  const mix = {
+    id,
+    videoUrl,
+    tmpDir,
+    status: "processing",
+    file: null,
+    filename: `youtube-${youtubeIdFromUrl(videoUrl) || "video"}.mp4`,
+    bytes: 0,
+    error: null,
+    createdAt: Date.now()
+  };
+
+  mixes.set(id, mix);
+
+  const args = [
+    "--no-warnings",
+    "--no-playlist",
+    "--no-progress",
+    "--max-filesize",
+    String(DOWNLOAD_MAX_BYTES),
+    "--merge-output-format",
+    "mp4",
+    "-f",
+    format || DEFAULT_DOWNLOAD_FORMAT,
+    "-o",
+    path.join(tmpDir, "media.%(ext)s")
+  ];
+
+  if (process.env.YTDLP_COOKIES) args.push("--cookies", process.env.YTDLP_COOKIES);
+
+  args.push("--", videoUrl);
+
+  let child;
+
+  try {
+    child = spawn("yt-dlp", args, {
+      shell: false,
+      timeout: DOWNLOAD_TIMEOUT_MS,
+      killSignal: "SIGKILL"
+    });
+  } catch (error) {
+    mix.status = "failed";
+    mix.error = { reason: "spawn_failed", error: "The server could not start yt-dlp." };
+    return mix;
+  }
+
+  let stderr = "";
+
+  child.stderr.on("data", (chunk) => {
+    if (stderr.length < MAX_STDERR) stderr += chunk.toString();
+  });
+
+  child.on("error", (error) => {
+    const missing = error.code === "ENOENT";
+    mix.status = "failed";
+    mix.error = {
+      reason: missing ? "yt_dlp_missing" : "process_error",
+      error: missing ? "yt-dlp is not installed on the server." : "Unable to run the downloader."
+    };
+  });
+
+  child.on("close", (code) => {
+    if (mix.status === "failed") return;
+
+    if (code !== 0) {
+      const classified = classifyYtDlpError(stderr, code);
+      mix.status = "failed";
+      mix.error = { ...classified };
+      log("warn", "mix.failed", { id, exitCode: code, reason: classified.reason });
+      return;
+    }
+
+    let file = null;
+
+    try {
+      file = fs
+        .readdirSync(tmpDir)
+        .map((name) => path.join(tmpDir, name))
+        .find((candidate) => fs.statSync(candidate).isFile());
+    } catch {
+      file = null;
+    }
+
+    if (!file) {
+      mix.status = "failed";
+      mix.error = { reason: "no_output", error: "The downloader produced no file." };
+      return;
+    }
+
+    let size = 0;
+
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      size = 0;
+    }
+
+    if (size > DOWNLOAD_MAX_BYTES) {
+      mix.status = "failed";
+      mix.error = {
+        reason: "response_too_large",
+        error: "The merged file is larger than the download cap.",
+        hint: `The cap is ${Math.max(1, Math.round(DOWNLOAD_MAX_BYTES / (1024 * 1024)))} MB.`
+      };
+      return;
+    }
+
+    mix.file = file;
+    mix.bytes = size;
+    mix.status = "ready";
+    log("info", "mix.ready", { id, bytes: size });
+  });
+
+  return mix;
+}
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [id, mix] of mixes) {
+    if (now - mix.createdAt <= MIX_TTL_MS) continue;
+
+    try {
+      fs.rmSync(mix.tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+
+    mixes.delete(id);
+  }
+}, 60000).unref();
+
+app.post("/api/mix", rateLimit, (req, res) => {
+  const requestId = req.id || newRequestId();
+  const videoUrl = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+  const format = typeof req.body?.format === "string" ? req.body.format.trim() : "";
+
+  log("info", "mix.start", { requestId, url: videoUrl || null });
+
+  if (!videoUrl || !validYouTubeUrl(videoUrl)) {
+    return sendError(res, requestId, 400, {
+      reason: "invalid_url",
+      error: "A valid HTTPS YouTube URL is required.",
+      hint: 'POST {"url":"https://youtu.be/..."}',
+      retryable: false
+    });
+  }
+
+  const mix = startMix(videoUrl, format);
+
+  return res.status(202).json({
+    success: true,
+    requestId,
+    id: mix.id,
+    status: mix.status,
+    downloadUrl: `/mix/${mix.id}`,
+    statusUrl: `/api/mix/${mix.id}`,
+    filename: mix.filename
+  });
+});
+
+app.get("/api/mix/:id", (req, res) => {
+  const requestId = req.id || newRequestId();
+  const mix = mixes.get(req.params.id);
+
+  if (!mix) {
+    return sendError(res, requestId, 404, {
+      reason: "mix_not_found",
+      error: "No such merge job (or it expired).",
+      hint: "Start one with POST /api/mix.",
+      retryable: false
+    });
+  }
+
+  if (mix.status === "failed") {
+    return sendError(res, requestId, 502, {
+      reason: mix.error?.reason || "mix_failed",
+      error: mix.error?.error || "The merge failed.",
+      hint: mix.error?.hint || null,
+      retryable: true
+    });
+  }
+
+  return res.json({
+    success: true,
+    requestId,
+    id: mix.id,
+    status: mix.status,
+    downloadUrl: `/mix/${mix.id}`,
+    filename: mix.filename,
+    bytes: mix.bytes
+  });
+});
+
+app.get("/mix/:id", (req, res) => {
+  const mix = mixes.get(req.params.id);
+
+  if (!mix) return res.status(404).type("txt").send("Not found");
+
+  const wantsHtml = String(req.headers.accept || "").includes("text/html");
+
+  if (mix.status === "ready") {
+    res.status(200);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", `attachment; filename="${mix.filename}"`);
+    res.setHeader("Content-Length", String(mix.bytes));
+    res.setHeader("Cache-Control", "no-store");
+    return fs.createReadStream(mix.file).pipe(res);
+  }
+
+  if (mix.status === "failed") {
+    if (wantsHtml) {
+      return res.status(502).type("html").send(ytErrorPage(502, mix.error || {}, mix.videoUrl));
+    }
+
+    return sendError(res, req.id || newRequestId(), 502, {
+      reason: mix.error?.reason || "mix_failed",
+      error: mix.error?.error || "The merge failed.",
+      hint: mix.error?.hint || null,
+      retryable: true
+    });
+  }
+
+  if (wantsHtml) {
+    return res
+      .status(202)
+      .type("html")
+      .send(
+        '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3">' +
+          '<title>Merging...</title><body style="font-family:system-ui;background:#101114;color:#f5f5f7;padding:24px">' +
+          "<h1>Merging video + audio...</h1><p>This page refreshes every 3 seconds.</p></body>"
+      );
+  }
+
+  return res.status(202).json({
+    success: true,
+    id: mix.id,
+    status: "processing",
+    downloadUrl: `/mix/${mix.id}`
+  });
+});
+
+// ---------------------------------------------------------------------------
 // JSON 404 for anything under /api/*
 // Without this, unknown API paths fall through to Express's HTML 404, which is
 // what produced the frontend's "server returned HTML instead of JSON" error.
