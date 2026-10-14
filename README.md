@@ -35,6 +35,11 @@ Full tunnel documentation: <https://precision-pledge-fled.ngrok-free.dev/docs/tu
 - `GET /api/health` — service status.
 - `POST /api/download` — `{"url":"https://youtu.be/…","quality":"…"}` returns video metadata (format
   information; media URLs are not exposed).
+- `GET /yt?=<https://youtu.be/…>` — downloads the video and streams it back as an attachment. Also
+  accepts `?url=`, `?u=`, `?q=`, `?link=`, `?watch=` or `?v=<videoId>`. It defaults to the best
+  format ≤ 360p that fits under the Pips Tunnel's ~18 MB response cap; override the selector with
+  `?format=<yt-dlp format>` (e.g. `?format=160`). Set `YTDLP_COOKIES` to a Netscape cookies file
+  when YouTube shows a bot check. `DOWNLOAD_MAX_BYTES` (default 16 MB) caps the output size.
 
 ## Run locally
 

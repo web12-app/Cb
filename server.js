@@ -2,6 +2,9 @@
 
 const express = require("express");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const app = express();
@@ -15,6 +18,21 @@ const DEBUG_ERRORS =
 const MAX_STDERR = 64 * 1024;
 const MAX_STDOUT = 5 * 1024 * 1024;
 const YTDLP_TIMEOUT_MS = 60000;
+
+// GET /yt downloads the video on the server and streams it back, so the body has
+// to fit through the Pips Tunnel's 25 MB respond cap (~18 MB of bytes). Keep the
+// default small; override the selector with ?format=<yt-dlp selector>.
+const DOWNLOAD_TIMEOUT_MS =
+  Number(process.env.YTDLP_DOWNLOAD_TIMEOUT_MS) > 0
+    ? Number(process.env.YTDLP_DOWNLOAD_TIMEOUT_MS)
+    : 300000;
+const DOWNLOAD_MAX_BYTES =
+  Number(process.env.DOWNLOAD_MAX_BYTES) > 0
+    ? Number(process.env.DOWNLOAD_MAX_BYTES)
+    : 16 * 1024 * 1024;
+const DEFAULT_DOWNLOAD_FORMAT =
+  process.env.DOWNLOAD_FORMAT ||
+  "bv*[height<=360]+ba/b[height<=360]/bv*+ba/b";
 
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
@@ -144,6 +162,20 @@ const ERROR_PATTERNS = [
     retryable: false
   },
   {
+    reason: "download_blocked",
+    re: /unable to download video data|HTTP Error 403|403: Forbidden|Sign in to confirm/i,
+    error: "YouTube refused to serve the media (403).",
+    hint: "The server's IP is flagged for media downloads. Retry later, use cookies, or run yt-dlp locally.",
+    retryable: true
+  },
+  {
+    reason: "format_unavailable",
+    re: /Requested format is not available|No video formats found/i,
+    error: "No downloadable format matched the selector.",
+    hint: "Try a different ?format= selector, or omit it.",
+    retryable: false
+  },
+  {
     reason: "unsupported_url",
     re: /is not a valid URL|Unsupported URL|No video ID found/i,
     error: "That is not a valid single-video YouTube URL.",
@@ -188,6 +220,50 @@ function extractDetail(stderr) {
   const errorLine = lines.reverse().find((l) => /^ERROR:/i.test(l));
 
   return (errorLine || lines[lines.length - 1] || "").slice(0, 500) || null;
+}
+
+/** Best-effort video id, used for the download filename. */
+function youtubeIdFromUrl(value) {
+  try {
+    const url = new URL(value);
+
+    if (url.hostname.toLowerCase() === "youtu.be") {
+      return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+    }
+
+    return url.searchParams.get("v") || "";
+  } catch {
+    return "";
+  }
+}
+
+// The /yt download endpoint takes the video URL from the query string in
+// several shapes, including the bare "?=<url>" form used in shared links:
+//   /yt?=<https://youtu.be/ID?si=...>
+//   /yt?url=<https://www.youtube.com/watch?v=ID>
+//   /yt?v=ID
+function youtubeUrlFromQuery(req) {
+  let params;
+
+  try {
+    params = new URL(req.originalUrl, "http://localhost").searchParams;
+  } catch {
+    return null;
+  }
+
+  for (const key of ["", "url", "u", "q", "link", "watch", "video"]) {
+    const value = params.get(key);
+
+    if (value && value.trim()) return value.trim();
+  }
+
+  const id = params.get("v");
+
+  if (id && /^[A-Za-z0-9_-]{6,20}$/.test(id)) {
+    return `https://www.youtube.com/watch?v=${id}`;
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +620,248 @@ app.post("/api/download", rateLimit, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /yt — direct video download.
+// Takes the video URL from the query string (see youtubeUrlFromQuery) and
+// streams the best compact progressive format back as an attachment. The default
+// format stays small so the body fits through the Pips Tunnel; override the
+// selector with ?format=<yt-dlp format>.
+// ---------------------------------------------------------------------------
+app.get("/yt", rateLimit, (req, res) => {
+  const requestId = req.id || newRequestId();
+  const started = Date.now();
+  const videoUrl = youtubeUrlFromQuery(req);
+
+  log("info", "yt.start", { requestId, ip: req.ip, url: videoUrl || null });
+
+  if (!videoUrl || !validYouTubeUrl(videoUrl)) {
+    log("warn", "yt.invalid_url", { requestId, sample: String(videoUrl).slice(0, 120) });
+
+    return sendError(res, requestId, 400, {
+      reason: "invalid_url",
+      error: "A valid HTTPS YouTube URL is required.",
+      hint: "Use /yt?=<https://youtu.be/...> or /yt?url=<https://youtube.com/watch?v=...>.",
+      retryable: false
+    });
+  }
+
+  const format = String(req.query.format || "").trim() || DEFAULT_DOWNLOAD_FORMAT;
+  const filename = `youtube-${youtubeIdFromUrl(videoUrl) || "video"}.mp4`;
+  const capMb = Math.max(1, Math.round(DOWNLOAD_MAX_BYTES / (1024 * 1024)));
+
+  let tmpDir;
+
+  try {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-yt-"));
+  } catch (error) {
+    log("error", "yt.tmpdir_failed", { requestId, message: error.message });
+
+    return sendError(res, requestId, 500, {
+      reason: "internal_error",
+      error: "The server could not prepare a download.",
+      hint: "See server log.",
+      retryable: true
+    });
+  }
+
+  const cleanup = () => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  };
+
+  const args = [
+    "--no-warnings",
+    "--no-playlist",
+    "--no-progress",
+    "--max-filesize",
+    String(DOWNLOAD_MAX_BYTES),
+    "--merge-output-format",
+    "mp4",
+    "-f",
+    format,
+    "-o",
+    path.join(tmpDir, "media.%(ext)s")
+  ];
+
+  // Optional: a Netscape cookies file helps when YouTube shows a bot check.
+  if (process.env.YTDLP_COOKIES) {
+    args.push("--cookies", process.env.YTDLP_COOKIES);
+  }
+
+  args.push("--", videoUrl);
+
+  let child;
+
+  try {
+    child = spawn("yt-dlp", args, {
+      shell: false,
+      timeout: DOWNLOAD_TIMEOUT_MS,
+      killSignal: "SIGKILL"
+    });
+  } catch (error) {
+    cleanup();
+    log("error", "yt.spawn_failed", { requestId, message: error.message });
+
+    return sendError(res, requestId, 500, {
+      reason: "spawn_failed",
+      error: "The server could not start yt-dlp.",
+      hint: "See server log.",
+      retryable: false
+    });
+  }
+
+  let stderr = "";
+  let finished = false;
+  let timer;
+
+  const stop = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  };
+
+  const fail = (status, payload) => {
+    cleanup();
+
+    if (!res.headersSent) return sendError(res, requestId, status, payload);
+    if (!res.writableEnded) res.end();
+    return undefined;
+  };
+
+  timer = setTimeout(() => {
+    log("error", "yt.timeout", { requestId, ms: DOWNLOAD_TIMEOUT_MS });
+    stop();
+    fail(504, {
+      reason: "timeout",
+      error: `The download did not finish within ${Math.round(DOWNLOAD_TIMEOUT_MS / 1000)}s.`,
+      hint: "Try a smaller format with ?format=, or retry.",
+      retryable: true
+    });
+  }, DOWNLOAD_TIMEOUT_MS + 1000);
+
+  res.on("close", () => {
+    if (!res.writableEnded) stop();
+  });
+
+  child.stderr.on("data", (chunk) => {
+    if (stderr.length < MAX_STDERR) stderr += chunk.toString();
+  });
+
+  child.on("error", (error) => {
+    log("error", "yt.process_error", { requestId, message: error.message, code: error.code });
+    stop();
+
+    const missing = error.code === "ENOENT";
+
+    fail(missing ? 503 : 500, {
+      reason: missing ? "yt_dlp_missing" : "process_error",
+      error: missing ? "yt-dlp is not installed on the server." : "Unable to run the downloader.",
+      hint: missing
+        ? "The deploy step that installs yt-dlp did not run or failed."
+        : "See server log.",
+      retryable: false
+    });
+  });
+
+  child.on("close", (code, signal) => {
+    clearTimeout(timer);
+    finished = true;
+
+    if (code !== 0) {
+      const classified = classifyYtDlpError(stderr, code);
+
+      log("error", "yt.failed", {
+        requestId,
+        exitCode: code,
+        signal,
+        reason: classified.reason,
+        url: videoUrl,
+        stderr: stderr.slice(0, MAX_STDERR)
+      });
+
+      const hint =
+        classified.reason === "format_unavailable"
+          ? `No format fit the ${capMb} MB cap. Try a smaller ?format= (for example ?format=160).`
+          : classified.hint;
+
+      return fail(502, {
+        ...classified,
+        hint,
+        debug: { exitCode: code, signal, detail: extractDetail(stderr) }
+      });
+    }
+
+    let file = null;
+
+    try {
+      file = fs
+        .readdirSync(tmpDir)
+        .map((name) => path.join(tmpDir, name))
+        .find((candidate) => fs.statSync(candidate).isFile());
+    } catch {
+      file = null;
+    }
+
+    if (!file) {
+      log("error", "yt.no_output", { requestId });
+
+      return fail(502, {
+        reason: "no_output",
+        error: "The downloader produced no file.",
+        hint: "Try a different ?format= selector.",
+        retryable: true
+      });
+    }
+
+    let size = 0;
+
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      size = 0;
+    }
+
+    if (size > DOWNLOAD_MAX_BYTES) {
+      log("warn", "yt.too_large", { requestId, size });
+
+      return fail(502, {
+        reason: "response_too_large",
+        error: "The video is larger than the download cap.",
+        hint: `The cap is ${capMb} MB (the tunnel's respond limit); pick a smaller ?format=.`,
+        retryable: false
+      });
+    }
+
+    log("info", "yt.end", { requestId, status: 200, bytes: size, ms: Date.now() - started });
+
+    res.status(200);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(size));
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Request-Id", requestId);
+
+    const stream = fs.createReadStream(file);
+
+    stream.on("error", () => {
+      cleanup();
+      if (!res.writableEnded) res.end();
+    });
+
+    res.on("finish", cleanup);
+    res.on("close", cleanup);
+
+    return stream.pipe(res);
+  });
+});
+
 // JSON 404 for anything under /api/*
 // Without this, unknown API paths fall through to Express's HTML 404, which is
 // what produced the frontend's "server returned HTML instead of JSON" error.
@@ -558,7 +876,7 @@ app.use("/api", (req, res) => {
     requestId,
     reason: "route_not_found",
     error: `No API route matches ${req.method} ${req.originalUrl}`,
-    hint: "Available routes: GET /api/health, POST /api/download",
+    hint: "Available routes: GET /api/health, POST /api/download, GET /yt",
     retryable: false
   });
 });
