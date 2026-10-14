@@ -363,8 +363,11 @@
     const healthDot = document.getElementById("healthDot");
     const healthText = document.getElementById("healthText");
 
-    // Relative URLs work with localhost and a public tunnel (Pips Tunnel).
-    const API_BASE = window.location.origin;
+    // The app can be served at the domain root or under a path prefix — e.g.
+    // /tun/<name> through the Pips Tunnel — so the API base is the current
+    // directory, not the bare origin.
+    const ORIGIN = window.location.origin;
+    const API_BASE = ORIGIN + window.location.pathname.replace(/\/+$/, "");
     const DOWNLOAD_API = `${API_BASE}/api/download`;
     const HEALTH_API = `${API_BASE}/api/health`;
 
@@ -669,10 +672,10 @@
 
       if (typeof data.downloadUrl === "string") {
         try {
-          const downloadURL = new URL(data.downloadUrl, API_BASE);
+          const downloadURL = new URL(data.downloadUrl, `${API_BASE}/`);
 
           if (downloadURL.protocol === "https:" ||
-              downloadURL.origin === API_BASE) {
+              downloadURL.origin === ORIGIN) {
             const link = document.createElement("a");
             link.className = "download-link";
             link.href = downloadURL.href;
