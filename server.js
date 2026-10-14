@@ -33,6 +33,10 @@ const DOWNLOAD_MAX_BYTES =
 const DEFAULT_DOWNLOAD_FORMAT =
   process.env.DOWNLOAD_FORMAT ||
   "bv*[height<=360]+ba/b[height<=360]/bv*+ba/b";
+// For ?direct=1 we only need a URL, so pick a selector that resolves to a single
+// stream (progressive if available, otherwise the best video-only track).
+const DIRECT_DOWNLOAD_FORMAT =
+  process.env.DIRECT_DOWNLOAD_FORMAT || "bv*[height<=360]/b[height<=360]/bv*/b";
 
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
@@ -264,6 +268,61 @@ function youtubeUrlFromQuery(req) {
   }
 
   return null;
+}
+
+// Resolve the direct media URL(s) with `yt-dlp -g` (no download). Used by
+// ?direct=1 so the visitor's own browser can fetch the file from the CDN.
+function resolveDirectUrls(videoUrl, format) {
+  return new Promise((resolve, reject) => {
+    const args = ["--no-warnings", "--no-playlist", "-g", "-f", format];
+
+    if (process.env.YTDLP_COOKIES) {
+      args.push("--cookies", process.env.YTDLP_COOKIES);
+    }
+
+    args.push("--", videoUrl);
+
+    let child;
+
+    try {
+      child = spawn("yt-dlp", args, {
+        shell: false,
+        timeout: YTDLP_TIMEOUT_MS,
+        killSignal: "SIGKILL"
+      });
+    } catch (error) {
+      return reject(error);
+    }
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < MAX_STDERR) stderr += chunk.toString();
+    });
+
+    child.on("error", reject);
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        const error = new Error("yt-dlp could not resolve a download URL.");
+        error.stderr = stderr;
+        error.exitCode = code;
+        return reject(error);
+      }
+
+      return resolve(
+        stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+      );
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -626,7 +685,7 @@ app.post("/api/download", rateLimit, (req, res) => {
 // format stays small so the body fits through the Pips Tunnel; override the
 // selector with ?format=<yt-dlp format>.
 // ---------------------------------------------------------------------------
-app.get("/yt", rateLimit, (req, res) => {
+app.get("/yt", rateLimit, async (req, res) => {
   const requestId = req.id || newRequestId();
   const started = Date.now();
   const videoUrl = youtubeUrlFromQuery(req);
@@ -644,7 +703,54 @@ app.get("/yt", rateLimit, (req, res) => {
     });
   }
 
-  const format = String(req.query.format || "").trim() || DEFAULT_DOWNLOAD_FORMAT;
+  const requestedFormat = String(req.query.format || "").trim();
+  const wantDirect = ["1", "true", "yes"].includes(
+    String(req.query.direct || "").toLowerCase()
+  );
+
+  // ?direct=1: don't download on the server — resolve the CDN URL and redirect
+  // the visitor's browser to it. Useful when the server's IP is blocked by
+  // YouTube but the visitor's is not.
+  if (wantDirect) {
+    try {
+      const urls = await resolveDirectUrls(
+        videoUrl,
+        requestedFormat || DIRECT_DOWNLOAD_FORMAT
+      );
+
+      if (!urls.length) {
+        return sendError(res, requestId, 502, {
+          reason: "no_output",
+          error: "The downloader returned no media URL.",
+          hint: "Try a different ?format= selector.",
+          retryable: true
+        });
+      }
+
+      log("info", "yt.direct", { requestId, ms: Date.now() - started, urls: urls.length });
+
+      res.setHeader("Cache-Control", "no-store");
+      return res.redirect(302, urls[0]);
+    } catch (error) {
+      const stderr = error.stderr || "";
+      const classified = classifyYtDlpError(stderr, error.exitCode ?? 1);
+
+      log("error", "yt.direct_failed", {
+        requestId,
+        exitCode: error.exitCode,
+        reason: classified.reason,
+        url: videoUrl,
+        stderr: stderr.slice(0, MAX_STDERR)
+      });
+
+      return sendError(res, requestId, 502, {
+        ...classified,
+        debug: { detail: extractDetail(stderr) }
+      });
+    }
+  }
+
+  const format = requestedFormat || DEFAULT_DOWNLOAD_FORMAT;
   const filename = `youtube-${youtubeIdFromUrl(videoUrl) || "video"}.mp4`;
   const capMb = Math.max(1, Math.round(DOWNLOAD_MAX_BYTES / (1024 * 1024)));
 

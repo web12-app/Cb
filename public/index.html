@@ -735,7 +735,7 @@
 
         const downloadLink = document.createElement("a");
         downloadLink.className = "download-link";
-        downloadLink.href = `${API_BASE}/yt?=${encodeURIComponent(url)}`;
+        downloadLink.href = `${API_BASE}/yt?=${encodeURIComponent(url)}&direct=1`;
         downloadLink.textContent = "Download video";
         downloadLink.rel = "noopener noreferrer";
         result.appendChild(downloadLink);
