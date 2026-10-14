@@ -35,6 +35,20 @@ const DEFAULT_DOWNLOAD_FORMAT =
   "bv*[height<=2160]+ba/b[height<=2160]/bv*+ba/b";
 // For ?direct=1 we only need URL(s): prefer a single muxed file, otherwise
 // resolve the best video+audio pair (up to 4K).
+// Optional YouTube auth for yt-dlp: a Netscape cookies file and/or the name
+// of a local browser profile. Helps when YouTube shows a bot check (403).
+function cookieArgs() {
+  const args = [];
+
+  if (process.env.YTDLP_COOKIES) args.push("--cookies", process.env.YTDLP_COOKIES);
+
+  if (process.env.YTDLP_COOKIES_FROM_BROWSER) {
+    args.push("--cookies-from-browser", process.env.YTDLP_COOKIES_FROM_BROWSER);
+  }
+
+  return args;
+}
+
 const DIRECT_DOWNLOAD_FORMAT =
   process.env.DIRECT_DOWNLOAD_FORMAT ||
   "b[height<=2160]/bv*[height<=2160]+ba[ext=m4a]/bv*[height<=2160]+ba/bv*+ba/b";
@@ -277,9 +291,7 @@ function resolveDirectUrls(videoUrl, format) {
   return new Promise((resolve, reject) => {
     const args = ["--no-warnings", "--no-playlist", "-g", "-f", format];
 
-    if (process.env.YTDLP_COOKIES) {
-      args.push("--cookies", process.env.YTDLP_COOKIES);
-    }
+    args.push(...cookieArgs());
 
     args.push("--", videoUrl);
 
@@ -866,9 +878,7 @@ app.get("/yt", rateLimit, async (req, res) => {
   ];
 
   // Optional: a Netscape cookies file helps when YouTube shows a bot check.
-  if (process.env.YTDLP_COOKIES) {
-    args.push("--cookies", process.env.YTDLP_COOKIES);
-  }
+  args.push(...cookieArgs());
 
   args.push("--", videoUrl);
 
@@ -1086,7 +1096,7 @@ function startMix(videoUrl, format) {
     path.join(tmpDir, "media.%(ext)s")
   ];
 
-  if (process.env.YTDLP_COOKIES) args.push("--cookies", process.env.YTDLP_COOKIES);
+  args.push(...cookieArgs());
 
   args.push("--", videoUrl);
 

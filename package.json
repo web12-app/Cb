@@ -5,7 +5,8 @@
   "description": "Node.js download proxy server",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "cookies": "node scripts/youtube-cookies.js"
   },
   "engines": {
     "node": ">=20"

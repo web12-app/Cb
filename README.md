@@ -50,6 +50,27 @@ Full tunnel documentation: <https://precision-pledge-fled.ngrok-free.dev/docs/tu
   `GET /api/mix/<id>` for `processing | ready | failed`, then fetch the merged video+audio file from
   `GET /mix/<id>`. Files are kept for `MIX_TTL_MS` (default 10 min).
 
+## Getting past YouTube's bot check
+
+YouTube can refuse media downloads from datacenter IPs (HTTP 403 / “Sign in to confirm you're not a
+bot”). Give yt-dlp cookies:
+
+- **Auto-create a `cookies.txt`** (loads youtube.com in a headless browser and exports its cookies):
+
+  ```sh
+  npm i -D puppeteer
+  npm run cookies                      # writes ./cookies.txt
+  YTDLP_COOKIES=./cookies.txt npm start
+  ```
+
+- **Use a browser profile you already have** (no `cookies.txt` needed):
+
+  ```sh
+  YTDLP_COOKIES_FROM_BROWSER=chrome npm start
+  ```
+
+- Or export cookies with a “Get cookies.txt” browser extension and set `YTDLP_COOKIES=<file>`.
+
 ## Run locally
 
 ```sh
