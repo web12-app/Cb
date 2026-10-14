@@ -686,6 +686,49 @@ app.post("/api/download", rateLimit, (req, res) => {
 // format stays small so the body fits through the Pips Tunnel; override the
 // selector with ?format=<yt-dlp format>.
 // ---------------------------------------------------------------------------
+function escapeHtmlText(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Browser-friendly error page for /yt. The merged download needs the server to
+// fetch the media, which YouTube can refuse for the server's IP.
+function ytErrorPage(status, payload, videoUrl) {
+  const direct = "/yt?=" + encodeURIComponent(videoUrl) + "&direct=1";
+  const json = "/yt?=" + encodeURIComponent(videoUrl) + "&direct=1&json=1";
+
+  return [
+    "<!doctype html>",
+    "<html lang=\"en\"><head><meta charset=\"utf-8\">",
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<title>Download unavailable</title>",
+    "<style>",
+    "body{margin:0;font-family:system-ui,sans-serif;background:#101114;color:#f5f5f7;display:grid;place-items:center;min-height:100vh;padding:24px}",
+    "main{max-width:580px;background:#1b1c21;border:1px solid #34353d;border-radius:20px;padding:28px}",
+    "h1{margin:0 0 10px;font-size:22px}",
+    ".code{display:inline-block;margin:0 0 14px;padding:3px 9px;border-radius:999px;background:#2a1b1e;border:1px solid #5a2f36;color:#ff9aa2;font:12px ui-monospace,monospace}",
+    "p{line-height:1.6;color:#b8bac5}",
+    "code{background:#111216;border:1px solid #34353d;border-radius:6px;padding:2px 6px;color:#9fe8c3;font:12px ui-monospace,monospace}",
+    ".actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 6px}",
+    ".btn{display:inline-block;padding:11px 16px;border-radius:12px;background:#dce4ff;color:#151720;font-weight:700;text-decoration:none}",
+    ".btn.ghost{background:#111216;border:1px solid #41434d;color:#b8c7ff}",
+    "</style></head><body><main>",
+    "<h1>Download unavailable</h1>",
+    "<span class=\"code\">" + status + " " + escapeHtmlText(payload.reason || "error") + "</span>",
+    "<p>" + escapeHtmlText(payload.error || "The download could not be produced.") + "</p>",
+    payload.hint ? "<p>" + escapeHtmlText(payload.hint) + "</p>" : "",
+    "<div class=\"actions\">",
+    "<a class=\"btn\" href=\"" + direct + "\">Try direct video link</a>",
+    "<a class=\"btn ghost\" href=\"" + json + "\">Get video + audio URLs (JSON)</a>",
+    "</div>",
+    "<p>4K video is split on YouTube. Download the direct video and audio links, then mux them: <code>ffmpeg -i video.mp4 -i audio.webm -c copy out.mp4</code></p>",
+    "</main></body></html>"
+  ].join("");
+}
+
 app.get("/yt", rateLimit, async (req, res) => {
   const requestId = req.id || newRequestId();
   const started = Date.now();
@@ -693,10 +736,19 @@ app.get("/yt", rateLimit, async (req, res) => {
 
   log("info", "yt.start", { requestId, ip: req.ip, url: videoUrl || null });
 
+  // Render a friendly HTML page for browsers, JSON for everything else.
+  const ytError = (status, payload) => {
+    if (!res.headersSent && String(req.headers.accept || "").includes("text/html")) {
+      return res.status(status).type("html").send(ytErrorPage(status, payload, videoUrl || ""));
+    }
+
+    return sendError(res, requestId, status, payload);
+  };
+
   if (!videoUrl || !validYouTubeUrl(videoUrl)) {
     log("warn", "yt.invalid_url", { requestId, sample: String(videoUrl).slice(0, 120) });
 
-    return sendError(res, requestId, 400, {
+    return ytError(400, {
       reason: "invalid_url",
       error: "A valid HTTPS YouTube URL is required.",
       hint: "Use /yt?=<https://youtu.be/...> or /yt?url=<https://youtube.com/watch?v=...>.",
@@ -720,7 +772,7 @@ app.get("/yt", rateLimit, async (req, res) => {
       );
 
       if (!urls.length) {
-        return sendError(res, requestId, 502, {
+        return ytError(502, {
           reason: "no_output",
           error: "The downloader returned no media URL.",
           hint: "Try a different ?format= selector.",
@@ -765,7 +817,7 @@ app.get("/yt", rateLimit, async (req, res) => {
         stderr: stderr.slice(0, MAX_STDERR)
       });
 
-      return sendError(res, requestId, 502, {
+      return ytError(502, {
         ...classified,
         debug: { detail: extractDetail(stderr) }
       });
@@ -783,7 +835,7 @@ app.get("/yt", rateLimit, async (req, res) => {
   } catch (error) {
     log("error", "yt.tmpdir_failed", { requestId, message: error.message });
 
-    return sendError(res, requestId, 500, {
+    return ytError(500, {
       reason: "internal_error",
       error: "The server could not prepare a download.",
       hint: "See server log.",
@@ -832,7 +884,7 @@ app.get("/yt", rateLimit, async (req, res) => {
     cleanup();
     log("error", "yt.spawn_failed", { requestId, message: error.message });
 
-    return sendError(res, requestId, 500, {
+    return ytError(500, {
       reason: "spawn_failed",
       error: "The server could not start yt-dlp.",
       hint: "See server log.",
@@ -858,7 +910,7 @@ app.get("/yt", rateLimit, async (req, res) => {
   const fail = (status, payload) => {
     cleanup();
 
-    if (!res.headersSent) return sendError(res, requestId, status, payload);
+    if (!res.headersSent) return ytError(status, payload);
     if (!res.writableEnded) res.end();
     return undefined;
   };
