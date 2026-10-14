@@ -8,6 +8,13 @@
   <title>Cb Downloader</title>
 
   <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101114;
+      color: #f5f5f7;
+    }
+
     * {
       box-sizing: border-box;
     }
@@ -18,18 +25,22 @@
       padding: 24px 16px;
       display: grid;
       place-items: center;
-      background: #101114;
-      color: #f5f5f7;
-      font-family: system-ui, -apple-system, sans-serif;
     }
 
     .app {
       width: 100%;
-      max-width: 560px;
-      padding: 26px;
+      max-width: 580px;
+      padding: 28px;
       border: 1px solid #34353d;
-      border-radius: 22px;
+      border-radius: 24px;
       background: #1b1c21;
+      box-shadow: 0 24px 70px #0005;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
 
     .logo {
@@ -37,29 +48,30 @@
       height: 48px;
       display: grid;
       place-items: center;
-      border-radius: 14px;
+      border-radius: 15px;
       background: #dce4ff;
       color: #171923;
+      font-size: 21px;
       font-weight: 800;
-      font-size: 24px;
     }
 
     h1 {
-      margin: 18px 0 8px;
-      font-size: 28px;
+      margin: 0;
+      font-size: 26px;
     }
 
-    .description {
+    .subtitle {
+      margin: 6px 0 24px;
       color: #b8bac5;
-      line-height: 1.6;
       font-size: 14px;
+      line-height: 1.6;
     }
 
     label {
       display: block;
-      margin: 20px 0 8px;
+      margin: 18px 0 8px;
       font-size: 14px;
-      font-weight: 600;
+      font-weight: 650;
     }
 
     input,
@@ -67,77 +79,131 @@
     button {
       width: 100%;
       min-height: 48px;
-      padding: 12px;
+      padding: 13px 14px;
       border-radius: 12px;
       font: inherit;
     }
 
     input,
     select {
-      background: #111216;
       border: 1px solid #41434d;
-      color: white;
+      background: #111216;
+      color: #f5f5f7;
+      outline: none;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: #b8c7ff;
     }
 
     button {
-      margin-top: 18px;
+      margin-top: 20px;
       border: 0;
       background: #dce4ff;
       color: #151720;
-      font-weight: 700;
+      font-weight: 750;
       cursor: pointer;
     }
 
     button:disabled {
-      opacity: 0.55;
+      opacity: .6;
       cursor: wait;
     }
 
     .status {
-      margin-top: 18px;
-      padding: 14px;
-      border-radius: 12px;
-      background: #111216;
+      margin-top: 20px;
+      padding: 16px;
       border: 1px solid #34353d;
-      overflow-wrap: anywhere;
+      border-radius: 14px;
+      background: #111216;
       line-height: 1.6;
+      overflow-wrap: anywhere;
     }
 
     .hidden {
       display: none;
     }
 
+    .error {
+      border-color: #82454b;
+      color: #ffb8bd;
+    }
+
+    .success {
+      border-color: #426e58;
+    }
+
     .thumbnail {
       display: block;
       width: 100%;
-      margin-top: 14px;
+      margin-top: 12px;
       border-radius: 12px;
+    }
+
+    .format-list {
+      padding-left: 20px;
     }
 
     .download-link {
       display: inline-block;
       margin-top: 12px;
       color: #b8c7ff;
+      overflow-wrap: anywhere;
     }
 
-    .note {
-      margin-top: 18px;
+    .muted {
+      color: #b8bac5;
+      font-size: 13px;
+    }
+
+    .footer {
+      margin: 20px 0 0;
       color: #9295a2;
       font-size: 12px;
-      line-height: 1.6;
+      line-height: 1.7;
+    }
+
+    .api-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 22px;
+      padding-top: 16px;
+      border-top: 1px solid #34353d;
+      color: #b8bac5;
+      font-size: 12px;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: #8c909b;
+    }
+
+    a {
+      color: #b8c7ff;
     }
   </style>
 </head>
 
 <body>
   <main class="app">
-    <div class="logo">Cb</div>
+    <header class="brand">
+      <div class="logo">Cb</div>
+      <div>
+        <h1>Cb Downloader</h1>
+        <div class="muted">Video information and download API</div>
+      </div>
+    </header>
 
-    <h1>Cb Downloader</h1>
-
-    <p class="description">
-      Enter a YouTube URL to retrieve video information from the connected API.
-      Use only content you own or are authorized to download.
+    <p class="subtitle">
+      Enter a video URL to request information from the Cb API.
+      Only download videos you own or are authorized to download.
     </p>
 
     <form id="downloadForm">
@@ -145,15 +211,16 @@
 
       <input
         id="videoUrl"
+        name="url"
         type="url"
         placeholder="https://www.youtube.com/watch?v=..."
         autocomplete="url"
         required
       >
 
-      <label for="quality">Video quality</label>
+      <label for="quality">Preferred quality</label>
 
-      <select id="quality">
+      <select id="quality" name="quality">
         <option value="best">Best available</option>
         <option value="1080">1080p</option>
         <option value="720">720p</option>
@@ -169,130 +236,234 @@
     <section
       id="result"
       class="status hidden"
+      role="status"
       aria-live="polite"
     ></section>
 
-    <p class="note">
-      The API must support the requested operation. Video metadata alone
-      does not guarantee a browser-ready download link.
+    <div class="api-status">
+      <span><span class="dot" id="healthDot"></span>API status</span>
+      <span id="healthText">Checking...</span>
+    </div>
+
+    <p class="footer">
+      A successful metadata response does not necessarily include a
+      browser-ready video download URL. The server must implement the
+      corresponding download endpoint.
     </p>
   </main>
 
   <script>
+    "use strict";
+
     const form = document.getElementById("downloadForm");
-    const videoInput = document.getElementById("videoUrl");
+    const urlInput = document.getElementById("videoUrl");
     const qualityInput = document.getElementById("quality");
-    const button = document.getElementById("submitButton");
+    const submitButton = document.getElementById("submitButton");
     const result = document.getElementById("result");
+    const healthDot = document.getElementById("healthDot");
+    const healthText = document.getElementById("healthText");
 
-    // Uses the same origin as the HTML page.
-    const API_URL = "/api/download";
+    // Relative URLs work with localhost and a Cloudflare Tunnel.
+    const API_BASE = window.location.origin;
+    const DOWNLOAD_API = `${API_BASE}/api/download`;
+    const HEALTH_API = `${API_BASE}/api/health`;
 
-    function showMessage(message) {
+    function showStatus(message, type = "") {
       result.replaceChildren();
-      result.classList.remove("hidden");
+      result.className = `status ${type}`.trim();
       result.textContent = message;
+    }
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          Accept: "application/json",
+          ...(options.headers || {})
+        }
+      });
+
+      const contentType = response.headers.get("content-type") || "";
+      const text = await response.text();
+
+      let data;
+
+      if (contentType.includes("application/json")) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error("The API returned malformed JSON.");
+        }
+      } else {
+        console.error(
+          "Expected JSON but received:",
+          contentType,
+          text.slice(0, 300)
+        );
+
+        if (text.trimStart().startsWith("<!DOCTYPE") ||
+            text.trimStart().startsWith("<html")) {
+          throw new Error(
+            `The server returned HTML instead of JSON (HTTP ${response.status}). Check the API route and server deployment.`
+          );
+        }
+
+        throw new Error(
+          `The server did not return JSON (HTTP ${response.status}).`
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || `API request failed: HTTP ${response.status}`
+        );
+      }
+
+      return data;
+    }
+
+    async function checkHealth() {
+      try {
+        const data = await requestJSON(HEALTH_API);
+
+        healthDot.style.background = "#65d69a";
+        healthText.textContent = data.status || "Online";
+      } catch (error) {
+        healthDot.style.background = "#ff727c";
+        healthText.textContent = "Unavailable";
+        console.error("API health check:", error.message);
+      }
+    }
+
+    function addText(parent, tag, text, className = "") {
+      const element = document.createElement(tag);
+      element.textContent = text;
+
+      if (className) {
+        element.className = className;
+      }
+
+      parent.appendChild(element);
+      return element;
+    }
+
+    function renderResult(data) {
+      result.replaceChildren();
+      result.className = "status success";
+
+      addText(result, "h2", data.title || "Video information");
+
+      if (typeof data.thumbnail === "string") {
+        try {
+          const thumbnailURL = new URL(data.thumbnail);
+
+          if (thumbnailURL.protocol === "https:") {
+            const image = document.createElement("img");
+            image.className = "thumbnail";
+            image.src = thumbnailURL.href;
+            image.alt = "Video thumbnail";
+            image.loading = "lazy";
+            image.referrerPolicy = "no-referrer";
+            image.onerror = () => image.remove();
+
+            result.appendChild(image);
+          }
+        } catch {
+          // Ignore an invalid thumbnail URL.
+        }
+      }
+
+      if (Number.isFinite(data.duration)) {
+        addText(result, "p", `Duration: ${data.duration} seconds`);
+      }
+
+      if (Array.isArray(data.formats) && data.formats.length > 0) {
+        addText(result, "h3", "Available formats");
+
+        const list = document.createElement("ul");
+        list.className = "format-list";
+
+        data.formats.forEach((format) => {
+          const item = document.createElement("li");
+
+          const resolution = format.height
+            ? `${format.height}p`
+            : "Unknown resolution";
+
+          item.textContent =
+            `${resolution} · ${format.ext || "unknown format"} · ID ${format.format_id || "N/A"}`;
+
+          list.appendChild(item);
+        });
+
+        result.appendChild(list);
+      }
+
+      if (typeof data.downloadUrl === "string") {
+        try {
+          const downloadURL = new URL(data.downloadUrl, API_BASE);
+
+          if (downloadURL.protocol === "https:" ||
+              downloadURL.origin === API_BASE) {
+            const link = document.createElement("a");
+            link.className = "download-link";
+            link.href = downloadURL.href;
+            link.textContent = "Open download link";
+            link.rel = "noopener noreferrer";
+
+            result.appendChild(link);
+          }
+        } catch {
+          addText(result, "p", "The server returned an invalid download URL.");
+        }
+      }
+
+      if (data.message) {
+        addText(result, "p", data.message, "muted");
+      } else if (!data.downloadUrl) {
+        addText(
+          result,
+          "p",
+          "Metadata received, but no browser-ready download link was returned.",
+          "muted"
+        );
+      }
     }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
 
-      const url = videoInput.value.trim();
+      const url = urlInput.value.trim();
       const quality = qualityInput.value;
 
-      button.disabled = true;
-      button.textContent = "Connecting to API...";
-      showMessage("Requesting video information...");
+      submitButton.disabled = true;
+      submitButton.textContent = "Connecting...";
+      showStatus("Requesting the API...");
 
       try {
-        const response = await fetch(API_URL, {
+        const data = await requestJSON(DOWNLOAD_API, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            url,
-            quality
-          })
+          body: JSON.stringify({ url, quality })
         });
 
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-          throw new Error(
-            data.error || `Request failed (${response.status})`
-          );
+        if (data.success !== true) {
+          throw new Error(data.error || "The API request was unsuccessful.");
         }
 
-        result.replaceChildren();
-
-        const title = document.createElement("h3");
-        title.textContent = data.title || "Video information";
-        result.appendChild(title);
-
-        if (data.thumbnail) {
-          const image = document.createElement("img");
-          image.className = "thumbnail";
-          image.src = data.thumbnail;
-          image.alt = "Video thumbnail";
-          image.referrerPolicy = "no-referrer";
-          result.appendChild(image);
-        }
-
-        if (Number.isFinite(data.duration)) {
-          const duration = document.createElement("p");
-          duration.textContent = `Duration: ${data.duration} seconds`;
-          result.appendChild(duration);
-        }
-
-        if (Array.isArray(data.formats) && data.formats.length) {
-          const heading = document.createElement("p");
-          heading.textContent = "Available formats:";
-          result.appendChild(heading);
-
-          const list = document.createElement("ul");
-
-          data.formats.forEach((format) => {
-            const item = document.createElement("li");
-            const resolution = format.height
-              ? `${format.height}p`
-              : "Unknown resolution";
-
-            item.textContent =
-              `${resolution} · ${format.ext || "unknown"} · ID ${format.format_id}`;
-
-            list.appendChild(item);
-          });
-
-          result.appendChild(list);
-        }
-
-        if (data.downloadUrl) {
-          const link = document.createElement("a");
-          link.className = "download-link";
-          link.href = data.downloadUrl;
-          link.textContent = "Open download link";
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          result.appendChild(link);
-        } else {
-          const message = document.createElement("p");
-          message.textContent =
-            data.message ||
-            "Video information received. A download endpoint is not configured.";
-          result.appendChild(message);
-        }
-
-        result.classList.remove("hidden");
+        renderResult(data);
       } catch (error) {
-        showMessage(
-          `${error.message}. Check that the API server is running and reachable.`
-        );
+        showStatus(error.message, "error");
+        console.error("Download API error:", error);
       } finally {
-        button.disabled = false;
-        button.textContent = "Get Video Information";
+        submitButton.disabled = false;
+        submitButton.textContent = "Get Video Information";
       }
     });
+
+    checkHealth();
   </script>
 </body>
 </html>
