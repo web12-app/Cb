@@ -130,6 +130,106 @@
       color: #ffb8bd;
     }
 
+    .err-reason {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #2a1b1e;
+      border: 1px solid #5a2f36;
+      color: #ff9aa2;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      letter-spacing: .02em;
+    }
+
+    .err-title {
+      margin: 0 0 6px;
+      font-size: 16px;
+      color: #ffd7da;
+    }
+
+    .err-hint {
+      margin: 0;
+      color: #c9a3a7;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .err-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #3a2a2d;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #9d8a8d;
+    }
+
+    .err-meta button {
+      width: auto;
+      min-height: 0;
+      margin: 0;
+      padding: 3px 9px;
+      border: 1px solid #4a3538;
+      border-radius: 8px;
+      background: #241a1c;
+      color: #cbb4b7;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .err-meta button:hover {
+      border-color: #6b4a4f;
+      color: #f0dcde;
+    }
+
+    .err-details {
+      margin-top: 12px;
+    }
+
+    .err-details summary {
+      cursor: pointer;
+      color: #a8949a;
+      font-size: 12px;
+      user-select: none;
+    }
+
+    .err-details pre {
+      margin: 10px 0 0;
+      padding: 12px;
+      max-height: 260px;
+      overflow: auto;
+      border-radius: 10px;
+      background: #0d0e11;
+      border: 1px solid #33262a;
+      color: #d8b6ba;
+      font-size: 11.5px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .retry {
+      width: auto;
+      min-height: 0;
+      margin-top: 14px;
+      padding: 8px 16px;
+      border-radius: 10px;
+      background: #3a2a2d;
+      color: #ffd7da;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .retry:hover {
+      background: #4a3539;
+    }
+
     .success {
       border-color: #426e58;
     }
@@ -274,14 +374,72 @@
       result.textContent = message;
     }
 
-    async function requestJSON(url, options = {}) {
-      const response = await fetch(url, {
-        ...options,
-        headers: {
-          Accept: "application/json",
-          ...(options.headers || {})
-        }
+    // An error carrying everything the server told us, so the UI can show the
+    // real reason instead of a generic string.
+    class ApiError extends Error {
+      constructor(message, info = {}) {
+        super(message);
+        this.name = "ApiError";
+        this.reason = info.reason || "unknown";
+        this.hint = info.hint || null;
+        this.requestId = info.requestId || null;
+        this.status = info.status || null;
+        this.retryable = info.retryable === true;
+        this.debug = info.debug || null;
+        this.phase = info.phase || "api";
+      }
+    }
+
+    // Real reasons for failures that happen before/around the server itself.
+    function classifyNetworkError(error) {
+      const msg = String(error?.message || "");
+
+      if (error?.name === "AbortError") {
+        return new ApiError("The request was cancelled (took over 90s).", {
+          reason: "client_timeout",
+          hint: "The server did not respond in time. It may be restarting or the tunnel dropped.",
+          retryable: true,
+          phase: "network"
+        });
+      }
+
+      if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+        return new ApiError("Could not reach the server at all.", {
+          reason: "unreachable",
+          hint: "DNS, CORS, or the Cloudflare Tunnel URL has expired. Check the API status dot below.",
+          retryable: true,
+          phase: "network"
+        });
+      }
+
+      return new ApiError(msg || "Network request failed.", {
+        reason: "network_error",
+        retryable: true,
+        phase: "network"
       });
+    }
+
+    async function requestJSON(url, options = {}) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90000);
+
+      let response;
+
+      try {
+        response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json",
+            ...(options.headers || {})
+          }
+        });
+      } catch (error) {
+        clearTimeout(timeout);
+        throw classifyNetworkError(error);
+      }
+
+      clearTimeout(timeout);
 
       const contentType = response.headers.get("content-type") || "";
       const text = await response.text();
@@ -292,34 +450,142 @@
         try {
           data = JSON.parse(text);
         } catch {
-          throw new Error("The API returned malformed JSON.");
+          throw new ApiError("The API returned malformed JSON.", {
+            reason: "malformed_json_response",
+            hint: "Content-Type said JSON but the body did not parse.",
+            status: response.status,
+            debug: { bodyHead: text.slice(0, 500) },
+            phase: "parse"
+          });
         }
       } else {
-        console.error(
-          "Expected JSON but received:",
-          contentType,
-          text.slice(0, 300)
-        );
+        console.error("Expected JSON but received:", contentType, text.slice(0, 300));
 
-        if (text.trimStart().startsWith("<!DOCTYPE") ||
-            text.trimStart().startsWith("<html")) {
-          throw new Error(
-            `The server returned HTML instead of JSON (HTTP ${response.status}). Check the API route and server deployment.`
+        const looksLikeHtml =
+          text.trimStart().startsWith("<!DOCTYPE") ||
+          text.trimStart().startsWith("<html");
+
+        if (looksLikeHtml) {
+          // This is the bug that used to be opaque: an unmatched /api/* route
+          // fell through to Express's HTML 404. The server now returns JSON.
+          throw new ApiError(
+            `The server returned an HTML page instead of JSON (HTTP ${response.status}).`,
+            {
+              reason: "html_instead_of_json",
+              hint: "The API route is missing, or a proxy/tunnel error page replaced the response. This is a deployment problem, not a problem with your URL.",
+              status: response.status,
+              debug: { bodyHead: text.slice(0, 500), contentType },
+              retryable: false,
+              phase: "parse"
+            }
           );
         }
 
-        throw new Error(
-          `The server did not return JSON (HTTP ${response.status}).`
+        throw new ApiError(
+          `The server did not return JSON (HTTP ${response.status}).`,
+          {
+            reason: "unexpected_content_type",
+            hint: `Expected application/json, received "${contentType || "none"}".`,
+            status: response.status,
+            debug: { bodyHead: text.slice(0, 500), contentType },
+            phase: "parse"
+          }
         );
       }
 
       if (!response.ok) {
-        throw new Error(
-          data.error || `API request failed: HTTP ${response.status}`
-        );
+        throw new ApiError(data.error || `API request failed: HTTP ${response.status}`, {
+          reason: data.reason,
+          hint: data.hint,
+          requestId: data.requestId,
+          status: response.status,
+          retryable: data.retryable,
+          debug: data.debug
+        });
       }
 
       return data;
+    }
+
+    // -----------------------------------------------------------------------
+    // Error rendering
+    // -----------------------------------------------------------------------
+    function renderError(error) {
+      const err =
+        error instanceof ApiError
+          ? error
+          : new ApiError(String(error?.message || error), {
+              reason: "client_error",
+              phase: "client"
+            });
+
+      console.error("[Cb]", err.reason, err);
+
+      result.replaceChildren();
+      result.className = "status error";
+
+      addText(result, "span", err.reason, "err-reason");
+      addText(result, "h3", err.message, "err-title");
+
+      if (err.hint) {
+        addText(result, "p", err.hint, "err-hint");
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "err-meta";
+
+      if (err.status !== null) {
+        addText(meta, "span", `HTTP ${err.status}`);
+      }
+
+      addText(meta, "span", `phase: ${err.phase}`);
+
+      if (err.requestId) {
+        addText(meta, "span", `req: ${err.requestId}`);
+
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "copy";
+        copy.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(err.requestId);
+            copy.textContent = "copied";
+          } catch {
+            copy.textContent = "blocked";
+          }
+
+          setTimeout(() => (copy.textContent = "copy"), 1500);
+        });
+
+        meta.appendChild(copy);
+      }
+
+      result.appendChild(meta);
+
+      if (err.debug) {
+        const details = document.createElement("details");
+        details.className = "err-details";
+
+        const summary = document.createElement("summary");
+        summary.textContent = "Raw diagnostics";
+        details.appendChild(summary);
+
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(err.debug, null, 2);
+        details.appendChild(pre);
+
+        result.appendChild(details);
+      }
+
+      if (err.retryable) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "retry";
+        retry.textContent = "Retry";
+        retry.addEventListener("click", () => form.requestSubmit());
+
+        result.appendChild(retry);
+      }
     }
 
     async function checkHealth() {
@@ -330,8 +596,10 @@
         healthText.textContent = data.status || "Online";
       } catch (error) {
         healthDot.style.background = "#ff727c";
-        healthText.textContent = "Unavailable";
-        console.error("API health check:", error.message);
+        healthText.textContent =
+          error instanceof ApiError ? error.reason : "unavailable";
+        healthText.title = String(error?.message || "");
+        console.error("API health check:", error);
       }
     }
 
@@ -450,13 +718,19 @@
         });
 
         if (data.success !== true) {
-          throw new Error(data.error || "The API request was unsuccessful.");
+          throw new ApiError(data.error || "The API request was unsuccessful.", {
+            reason: data.reason,
+            hint: data.hint,
+            requestId: data.requestId,
+            retryable: data.retryable,
+            debug: data.debug,
+            phase: "api"
+          });
         }
 
         renderResult(data);
       } catch (error) {
-        showStatus(error.message, "error");
-        console.error("Download API error:", error);
+        renderError(error);
       } finally {
         submitButton.disabled = false;
         submitButton.textContent = "Get Video Information";
@@ -465,5 +739,5 @@
 
     checkHealth();
   </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a4a612ab4b0d7f70',t:'MTc5MTk3NTU0OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
