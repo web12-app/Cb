@@ -3,12 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CB Download Proxy</title>
+  <title>Cb Direct Downloader</title>
 
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -16,54 +14,45 @@
       display: grid;
       place-items: center;
       padding: 20px;
-      background: #101116;
+      background: #101114;
       color: #f5f5f7;
       font-family: system-ui, sans-serif;
     }
 
     .card {
       width: 100%;
-      max-width: 480px;
+      max-width: 520px;
       padding: 28px;
-      border: 1px solid #343640;
+      background: #1b1c21;
+      border: 1px solid #34353d;
       border-radius: 22px;
-      background: #1a1b22;
     }
 
-    h1 {
-      margin-top: 0;
-      font-size: 26px;
-    }
+    h1 { margin-top: 0; }
 
     p {
-      color: #b5b6c2;
+      color: #b8bac5;
       line-height: 1.5;
     }
 
-    label {
-      display: block;
-      margin: 20px 0 8px;
-    }
-
-    input, select, button {
+    input, button {
       width: 100%;
-      min-height: 48px;
-      padding: 12px;
-      border-radius: 10px;
+      padding: 14px;
+      margin-top: 12px;
+      border-radius: 12px;
       font: inherit;
     }
 
-    input, select {
-      border: 1px solid #41434e;
-      background: #111218;
+    input {
+      background: #111216;
+      border: 1px solid #41434d;
       color: white;
     }
 
     button {
-      margin-top: 20px;
+      background: #dce4ff;
       border: 0;
-      background: #7164ff;
-      color: white;
+      color: #151720;
       font-weight: 700;
       cursor: pointer;
     }
@@ -73,57 +62,49 @@
       cursor: wait;
     }
 
-    #status {
+    #result {
       overflow-wrap: anywhere;
       margin-top: 18px;
     }
+
+    a { color: #b8c7ff; }
   </style>
 </head>
 
 <body>
   <main class="card">
-    <h1>CB Download Proxy</h1>
-
-    <p>
-      Enter a YouTube URL and select the maximum video
-      resolution supported by the source.
-    </p>
+    <h1>Cb Downloader</h1>
+    <p>Enter a direct HTTPS video-file URL that you own or are authorized to download.</p>
 
     <form id="downloadForm">
-      <label for="url">YouTube URL</label>
       <input
-        id="url"
+        id="videoUrl"
         type="url"
-        placeholder="https://youtu.be/..."
+        placeholder="https://example.com/video.mp4"
+        autocomplete="url"
         required
       >
 
-      <label for="quality">Video quality</label>
-      <select id="quality">
-        <option value="720p">720p</option>
-        <option value="1080p" selected>1080p</option>
-        <option value="1440p">1440p (2K)</option>
-        <option value="2160p">2160p (4K)</option>
-      </select>
-
       <button id="submitButton" type="submit">
-        Prepare Download
+        Create Download Link
       </button>
     </form>
 
-    <p id="status" role="status"></p>
+    <div id="result" role="status" aria-live="polite"></div>
   </main>
 
   <script>
     const form = document.getElementById("downloadForm");
+    const input = document.getElementById("videoUrl");
     const button = document.getElementById("submitButton");
-    const statusBox = document.getElementById("status");
+    const result = document.getElementById("result");
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
 
+      result.textContent = "";
       button.disabled = true;
-      statusBox.textContent = "Checking request...";
+      button.textContent = "Checking URL...";
 
       try {
         const response = await fetch("/api/download", {
@@ -131,32 +112,28 @@
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            url: document.getElementById("url").value.trim(),
-            quality: document.getElementById("quality").value
-          })
+          body: JSON.stringify({ url: input.value.trim() })
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || "Request failed.");
+          throw new Error(data.error || "Unable to create link.");
         }
 
-        if (data.downloadUrl) {
-          const link = document.createElement("a");
-          link.href = data.downloadUrl;
-          link.textContent = "Download video";
-          link.rel = "noopener";
-          statusBox.replaceChildren(link);
-        } else {
-          statusBox.textContent =
-            data.message || "No download link was returned.";
-        }
+        const link = document.createElement("a");
+        link.href = data.downloadUrl;
+        link.textContent = "Open direct download URL";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+
+        result.textContent = data.message + " ";
+        result.appendChild(link);
       } catch (error) {
-        statusBox.textContent = error.message;
+        result.textContent = error.message;
       } finally {
         button.disabled = false;
+        button.textContent = "Create Download Link";
       }
     });
   </script>
