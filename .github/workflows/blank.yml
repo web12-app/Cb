@@ -1,77 +1,64 @@
-name: Run Git Tag Shell
+name: YouTube Downloader
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Git tag name"
+      video_url:
+        description: "YouTube video URL"
         required: true
-        default: "1.0.0"
-      script:
-        description: "Shell file path inside the selected tag"
+        type: string
+      format:
+        description: "Video quality"
         required: true
-        default: "run.sh"
+        type: choice
+        options:
+          - "best"
+          - "2160p"
+          - "1440p"
+          - "1080p"
+        default: "2160p"
 
 permissions:
   contents: read
 
 jobs:
-  run:
+  download:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install -U yt-dlp --break-system-packages
+
+      - name: Download YouTube video
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+          QUALITY: ${{ inputs.format }}
+        run: |
+          mkdir -p downloads
+
+          case "$QUALITY" in
+            2160p) HEIGHT=2160 ;;
+            1440p) HEIGHT=1440 ;;
+            1080p) HEIGHT=1080 ;;
+            *) HEIGHT=4320 ;;
+          esac
+
+          yt-dlp \
+            --no-playlist \
+            --max-filesize 5G \
+            -f "bestvideo[height<=${HEIGHT}]+bestaudio/best[height<=${HEIGHT}]" \
+            --merge-output-format mp4 \
+            -o "downloads/%(title).150s.%(ext)s" \
+            "$VIDEO_URL"
+
+      - name: Upload downloaded video
+        uses: actions/upload-artifact@v4
         with:
-          ref: main
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Find and Checkout Tag
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -e
-
-          git fetch origin --tags
-
-          echo "Available tags:"
-          git tag --list
-
-          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag not found: $TAG"
-            exit 1
-          fi
-
-          git checkout --detach "refs/tags/$TAG"
-
-      - name: List Files
-        run: |
-          echo "Current directory:"
-          pwd
-
-          echo "Tag files:"
-          git ls-tree -r --name-only HEAD
-
-      - name: Run Shell Script
-        env:
-          SCRIPT: ${{ inputs.script }}
-        run: |
-          set -e
-
-          if [[ "$SCRIPT" != *.sh ]]; then
-            echo "Only .sh files are allowed"
-            exit 1
-          fi
-
-          if [[ "$SCRIPT" == /* || "$SCRIPT" == *".."* ]]; then
-            echo "Invalid script path"
-            exit 1
-          fi
-
-          if [[ ! -f "$SCRIPT" ]]; then
-            echo "Script not found: $SCRIPT"
-            exit 1
-          fi
-
-          bash "$SCRIPT"
+          name: youtube-video
+          path: downloads/
+          if-no-files-found: error
+          retention-days: 2
