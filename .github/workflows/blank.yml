@@ -1,131 +1,100 @@
-name: YouTube Video Downloader
+name: Cb Download Server
 
 on:
   workflow_dispatch:
-    inputs:
-      video_url:
-        description: "YouTube video URL"
-        required: true
-        type: string
-
-      quality:
-        description: "Select video quality"
-        required: true
-        type: choice
-        options:
-          - "2160p"
-          - "1440p"
-          - "1080p"
-          - "720p"
-          - "best"
-        default: "2160p"
 
 permissions:
   contents: read
 
+concurrency:
+  group: cb-download-server
+  cancel-in-progress: false
+
 jobs:
-  download:
-    name: Download YouTube Video
+  server:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
 
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl ca-certificates
-          python3 -m pip install --upgrade yt-dlp --break-system-packages
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Deno JavaScript runtime
-        uses: denoland/setup-deno@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          deno-version: v2.x
+          node-version: "22"
+          cache: npm
 
-      - name: Verify tools
-        run: |
-          echo "yt-dlp version:"
-          yt-dlp --version
+      - name: Install dependencies
+        run: npm install
 
-          echo "Deno version:"
-          deno --version
-
-          echo "FFmpeg version:"
-          ffmpeg -version | head -n 1
-
-      - name: Validate video URL
+      - name: Start Node.js server and Cloudflare Tunnel
         env:
-          VIDEO_URL: ${{ inputs.video_url }}
+          PORT: 3000
         run: |
-          python3 - <<'PY'
-          import os
-          from urllib.parse import urlparse
+          set -e
 
-          url = os.environ.get("VIDEO_URL", "").strip()
-          parsed = urlparse(url)
+          nohup npm start > server.log 2>&1 &
+          echo $! > server.pid
 
-          allowed_hosts = {
-              "youtube.com",
-              "www.youtube.com",
-              "m.youtube.com",
-              "music.youtube.com",
-              "youtu.be",
-              "www.youtube-nocookie.com",
-          }
+          echo "Waiting for Node.js server..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/api/health; then
+              break
+            fi
+            sleep 2
+          done
 
-          if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
-              raise SystemExit("Error: Enter a valid HTTPS YouTube URL.")
+          curl -fsS http://localhost:3000/api/health
 
-          print("YouTube URL validation passed.")
-          PY
+          echo "Downloading cloudflared..."
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
 
-      - name: Download video
-        env:
-          VIDEO_URL: ${{ inputs.video_url }}
-          QUALITY: ${{ inputs.quality }}
-        run: |
-          set -euo pipefail
-          mkdir -p downloads
+          chmod +x cloudflared
 
-          case "$QUALITY" in
-            2160p) HEIGHT=2160 ;;
-            1440p) HEIGHT=1440 ;;
-            1080p) HEIGHT=1080 ;;
-            720p)  HEIGHT=720 ;;
-            best)  HEIGHT=4320 ;;
-            *) echo "Unsupported quality"; exit 1 ;;
-          esac
+          echo "Starting temporary Cloudflare Tunnel..."
+          nohup ./cloudflared tunnel \
+            --no-autoupdate \
+            --url http://localhost:3000 \
+            > tunnel.log 2>&1 &
 
-          echo "Requested maximum height: ${HEIGHT}p"
+          echo $! > tunnel.pid
 
-          yt-dlp \
-            --no-playlist \
-            --js-runtimes deno \
-            --no-overwrites \
-            --max-filesize 5G \
-            --format "bestvideo[height<=${HEIGHT}]+bestaudio/best[height<=${HEIGHT}]" \
-            --merge-output-format mp4 \
-            --output "downloads/%(title).150s.%(ext)s" \
-            --print "after_move:filepath" \
-            "$VIDEO_URL"
+          echo "Waiting for public URL..."
+          for i in $(seq 1 60); do
+            TUNNEL_URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
 
-      - name: Verify downloaded file
-        run: |
-          set -euo pipefail
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "=================================="
+              echo "Cloudflare Tunnel URL: $TUNNEL_URL"
+              echo "=================================="
+              break
+            fi
 
-          if ! find downloads -maxdepth 1 -type f \
-              \( -name '*.mp4' -o -name '*.mkv' -o -name '*.webm' \) \
-              -print -quit | grep -q .; then
-            echo "Error: No video file was downloaded."
+            sleep 2
+          done
+
+          if [ -z "${TUNNEL_URL:-}" ]; then
+            echo "Tunnel URL was not generated."
+            cat tunnel.log
             exit 1
           fi
 
-          echo "Downloaded files:"
-          find downloads -maxdepth 1 -type f -printf '%f (%s bytes)\n'
+          echo "Server and tunnel are running."
+          echo "GitHub Actions runner will keep them alive while this job runs."
 
-      - name: Upload video artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-video-${{ inputs.quality }}
-          path: downloads/*
-          if-no-files-found: error
-          retention-days: 2
+          # Keep the workflow alive; GitHub-hosted runners are temporary.
+          while kill -0 "$(cat server.pid)" 2>/dev/null \
+            && kill -0 "$(cat tunnel.pid)" 2>/dev/null; do
+            sleep 30
+          done
+
+      - name: Show logs if the job fails
+        if: failure()
+        run: |
+          echo "===== Server log ====="
+          cat server.log 2>/dev/null || true
+          echo "===== Tunnel log ====="
+          cat tunnel.log 2>/dev/null || true
