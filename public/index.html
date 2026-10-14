@@ -363,7 +363,7 @@
     const healthDot = document.getElementById("healthDot");
     const healthText = document.getElementById("healthText");
 
-    // Relative URLs work with localhost and a Cloudflare Tunnel.
+    // Relative URLs work with localhost and a public tunnel (Pips Tunnel).
     const API_BASE = window.location.origin;
     const DOWNLOAD_API = `${API_BASE}/api/download`;
     const HEALTH_API = `${API_BASE}/api/health`;
@@ -406,7 +406,7 @@
       if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
         return new ApiError("Could not reach the server at all.", {
           reason: "unreachable",
-          hint: "DNS, CORS, or the Cloudflare Tunnel URL has expired. Check the API status dot below.",
+          hint: "DNS, CORS, or the public tunnel URL has expired. Check the API status dot below.",
           retryable: true,
           phase: "network"
         });
