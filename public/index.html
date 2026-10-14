@@ -871,40 +871,6 @@
         mergedBtn.textContent = "Download video + audio";
         actions.appendChild(mergedBtn);
 
-        mergedBtn.addEventListener("click", async () => {
-          mergedBtn.disabled = true;
-          mergedBtn.textContent = "Merging...";
-
-          try {
-            const job = await requestJSON(`${API_BASE}/api/mix`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url })
-            });
-
-            for (let i = 0; i < 60; i++) {
-              const state = await requestJSON(`${API_BASE}/api/mix/${job.id}`);
-
-              if (state.status === "ready") {
-                window.location.href = `${API_BASE}${state.downloadUrl}`;
-                return;
-              }
-
-              await new Promise((resolve) => setTimeout(resolve, 3000));
-            }
-
-            throw new ApiError("The merge is taking too long.", {
-              reason: "merge_timeout",
-              phase: "api"
-            });
-          } catch (error) {
-            renderError(error);
-          } finally {
-            mergedBtn.disabled = false;
-            mergedBtn.textContent = "Download video + audio";
-          }
-        });
-
         // Direct CDN links (resolved on the server, no tunnel size cap).
         const videoBtn = document.createElement("a");
         videoBtn.className = "download-btn ghost";
@@ -912,9 +878,12 @@
         videoBtn.textContent = "Resolving direct video link...";
         actions.appendChild(videoBtn);
 
+        let directInfo = null;
+
         requestJSON(`${API_BASE}/yt?=${encodeURIComponent(url)}&direct=1&json=1`)
           .then((info) => {
             if (info && info.success === true && typeof info.downloadUrl === "string") {
+              directInfo = info;
               videoBtn.href = info.downloadUrl;
               videoBtn.textContent = "Direct video link";
               videoBtn.title = info.downloadUrl;
@@ -944,6 +913,58 @@
             }
           })
           .catch(() => videoBtn.remove());
+
+        mergedBtn.addEventListener("click", async () => {
+          mergedBtn.disabled = true;
+          mergedBtn.textContent = "Merging...";
+
+          try {
+            const job = await requestJSON(`${API_BASE}/api/mix`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url })
+            });
+
+            for (let i = 0; i < 60; i++) {
+              const state = await requestJSON(`${API_BASE}/api/mix/${job.id}`);
+
+              if (state.status === "ready") {
+                window.location.href = `${API_BASE}${state.downloadUrl}`;
+                return;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+            }
+
+            throw new ApiError("The merge is taking too long.", {
+              reason: "merge_timeout",
+              phase: "api"
+            });
+          } catch (error) {
+            // When the server IP is blocked by YouTube, mux in the browser instead.
+            let info = directInfo;
+
+            for (let i = 0; i < 12 && (!info || !info.audioUrl); i++) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              info = directInfo;
+            }
+
+            if (info && info.audioUrl) {
+              const note = document.createElement("p");
+              note.style.cssText = "flex-basis:100%;margin:4px 0 0;color:#c9a3a7;font-size:13px";
+              note.textContent =
+                "The server's IP is blocked by YouTube, so the merge is running in your browser.";
+              actions.appendChild(note);
+
+              await mergeInBrowser(info.downloadUrl, info.audioUrl, info.filename, mergedBtn);
+            } else {
+              renderError(error);
+            }
+          } finally {
+            mergedBtn.disabled = false;
+            mergedBtn.textContent = "Download video + audio";
+          }
+        });
       } catch (error) {
         renderError(error);
       } finally {
