@@ -1,8 +1,3 @@
-# Updated Cb deployment workflow (Pips Tunnel).
-# GitHub App tokens without the "workflows" permission cannot push into
-# .github/workflows/, so this copy keeps the change on the branch.
-# Install it with:  cp deploy/blank.yml .github/workflows/blank.yml
-
 name: Cb API Server
 
 on:
