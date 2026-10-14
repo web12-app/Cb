@@ -1,23 +1,25 @@
-name: Cb Download Server
+name: Cb API Server
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: cb-download-server
-  cancel-in-progress: false
+  group: cb-api-server
+  cancel-in-progress: true
 
 jobs:
   server:
-    name: Node.js and Cloudflare Tunnel
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 350
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -25,124 +27,256 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install system dependencies
+      - name: Install System Dependencies
         run: |
-          set -e
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip ffmpeg curl
+          sudo apt-get install -y \
+            curl \
+            ffmpeg \
+            python3 \
+            python3-pip \
+            ca-certificates \
+            jq
 
       - name: Install yt-dlp
         run: |
-          set -e
-          python3 -m pip install --user --break-system-packages yt-dlp
+          sudo curl -fsSL \
+            https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
 
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          sudo chmod +x /usr/local/bin/yt-dlp
 
-          "$HOME/.local/bin/yt-dlp" --version
+          echo "yt-dlp version:"
+          yt-dlp --version
 
-      - name: Install Node.js dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Start Node.js server
-        env:
-          PORT: "3000"
+      - name: Install Node Dependencies
         run: |
-          set -e
-          nohup npm start > server.log 2>&1 &
-          echo $! > server.pid
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Validate Project Files
+        run: |
+          test -f server.js || {
+            echo "ERROR: server.js not found"
+            exit 1
+          }
+
+          test -d public || {
+            echo "ERROR: public directory not found"
+            exit 1
+          }
+
+          node --check server.js
+          echo "Project validation successful"
+
+      - name: Start Cb API Server
+        run: |
+          mkdir -p logs
+
+          nohup npm start > logs/server.log 2>&1 &
+          echo $! > /tmp/cb-server.pid
 
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:3000/api/health; then
-              echo "Server is ready."
-              exit 0
-            fi
-            sleep 2
-          done
-
-          cat server.log
-          exit 1
-
-      - name: Install Cloudflare Tunnel
-        run: |
-          set -e
-
-          curl -fsSL \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o cloudflared
-
-          chmod +x cloudflared
-          ./cloudflared --version
-
-      - name: Start Cloudflare Tunnel
-        run: |
-          set -e
-
-          nohup ./cloudflared tunnel \
-            --no-autoupdate \
-            --url http://127.0.0.1:3000 \
-            > tunnel.log 2>&1 &
-
-          echo $! > tunnel.pid
-
-          TUNNEL_URL=""
-
-          for i in $(seq 1 60); do
-            TUNNEL_URL=$(
-              grep -Eo \
-                'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
-                tunnel.log | head -n 1 || true
-            )
-
-            if [ -n "$TUNNEL_URL" ]; then
+            if curl -fsS \
+              http://127.0.0.1:3000/api/health \
+              > /tmp/cb-local-health.json; then
               break
             fi
 
             sleep 2
           done
 
-          if [ -z "$TUNNEL_URL" ]; then
-            cat tunnel.log
-            echo "::error::Cloudflare Tunnel URL was not created."
+          if ! curl -fsS \
+            http://127.0.0.1:3000/api/health; then
+            echo "ERROR: Local API failed to start"
+            cat logs/server.log
             exit 1
           fi
 
-          echo "======================================"
-          echo "Cb Public URL: $TUNNEL_URL"
-          echo "======================================"
-
-          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
-
-      - name: Verify API
+      - name: Test Local API
         run: |
-          curl --fail --show-error \
-            --retry 5 \
-            --retry-delay 3 \
-            "$TUNNEL_URL/api/health"
+          echo "Testing local health endpoint..."
 
-      - name: Keep server running
+          curl --fail-with-body -sS \
+            http://127.0.0.1:3000/api/health \
+            | tee /tmp/cb-local-health.json
+
+          jq -e '.success == true' \
+            /tmp/cb-local-health.json
+
+      - name: Install Cloudflare Tunnel
         run: |
-          echo "Cb server is running."
-          echo "Public URL: $TUNNEL_URL"
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+
+          chmod +x /tmp/cloudflared
+
+          /tmp/cloudflared --version
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          nohup /tmp/cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:3000 \
+            > /tmp/cb-cloudflared.log 2>&1 &
+
+          echo $! > /tmp/cb-cloudflared.pid
+
+          PUBLIC_URL=""
+
+          for i in $(seq 1 60); do
+            PUBLIC_URL=$(
+              grep -Eo \
+                'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+                /tmp/cb-cloudflared.log \
+                | head -n 1
+            )
+
+            if [ -n "$PUBLIC_URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "ERROR: Cloudflare public URL was not created"
+            cat /tmp/cb-cloudflared.log
+            exit 1
+          fi
+
+          echo "$PUBLIC_URL" > /tmp/cb-public-url.txt
+
+          {
+            echo "## Cb Public API"
+            echo ""
+            echo "Public URL: $PUBLIC_URL"
+            echo ""
+            echo "Health: $PUBLIC_URL/api/health"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Public URL: $PUBLIC_URL"
+
+      - name: Test Public Health API
+        run: |
+          PUBLIC_URL="$(cat /tmp/cb-public-url.txt)"
+
+          echo "Testing: $PUBLIC_URL/api/health"
+
+          SUCCESS=0
+
+          for i in $(seq 1 15); do
+            HTTP_CODE=$(
+              curl -sS \
+                --max-time 15 \
+                -o /tmp/cb-public-health.json \
+                -w '%{http_code}' \
+                "$PUBLIC_URL/api/health" \
+                || true
+            )
+
+            echo "Attempt $i: HTTP $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ] &&
+               jq -e '.success == true' \
+                 /tmp/cb-public-health.json >/dev/null 2>&1; then
+              SUCCESS=1
+              break
+            fi
+
+            sleep 3
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "ERROR: Public health check failed"
+            cat /tmp/cb-public-health.json 2>/dev/null || true
+            cat /tmp/cb-cloudflared.log
+            exit 1
+          fi
+
+          cat /tmp/cb-public-health.json
+
+      - name: Test Public Download API
+        continue-on-error: true
+        run: |
+          PUBLIC_URL="$(cat /tmp/cb-public-url.txt)"
+
+          echo "Testing POST /api/download"
+
+          HTTP_CODE=$(
+            curl -sS \
+              --max-time 90 \
+              -X POST "$PUBLIC_URL/api/download" \
+              -H "Content-Type: application/json" \
+              -o /tmp/cb-download-response.json \
+              -w '%{http_code}' \
+              -d '{"url":"https://youtu.be/xWxhPKQfUWU"}' \
+              || true
+          )
+
+          echo "Download API HTTP status: $HTTP_CODE"
+
+          echo "Response:"
+          cat /tmp/cb-download-response.json 2>/dev/null || true
+          echo ""
+
+          if jq -e . /tmp/cb-download-response.json >/dev/null 2>&1; then
+            echo "Response is valid JSON"
+
+            jq -r '
+              "success=\(.success // "not provided")",
+              "error=\(.error // "none")",
+              "message=\(.message // "none")"
+            ' /tmp/cb-download-response.json
+          else
+            echo "WARNING: Response is not JSON"
+            echo "Possible tunnel, server, or upstream error"
+          fi
+
+      - name: Monitor Cb API
+        run: |
+          echo "Cb API is running."
+          echo "Public URL:"
+          cat /tmp/cb-public-url.txt
+
+          echo "GitHub Actions jobs have a limited lifetime."
+          echo "The temporary URL will stop working when this job ends."
 
           while true; do
-            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
-              cat server.log
+            if ! kill -0 "$(cat /tmp/cb-server.pid)" 2>/dev/null; then
+              echo "ERROR: Node server stopped"
+              cat logs/server.log
               exit 1
             fi
 
-            if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
-              cat tunnel.log
+            if ! kill -0 "$(cat /tmp/cb-cloudflared.pid)" 2>/dev/null; then
+              echo "ERROR: Cloudflare Tunnel stopped"
+              cat /tmp/cb-cloudflared.log
+              exit 1
+            fi
+
+            if ! curl -fsS --max-time 5 \
+              http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "ERROR: Local health check failed"
+              cat logs/server.log
               exit 1
             fi
 
             sleep 30
           done
 
-      - name: Print logs on failure
-        if: failure()
+      - name: Print Diagnostics
+        if: always()
         run: |
-          echo "===== Server logs ====="
-          cat server.log 2>/dev/null || true
+          echo "=== Node server log ==="
+          tail -n 100 logs/server.log 2>/dev/null || true
 
-          echo "===== Tunnel logs ====="
-          cat tunnel.log 2>/dev/null || true
+          echo "=== Cloudflare Tunnel log ==="
+          tail -n 100 /tmp/cb-cloudflared.log 2>/dev/null || true
+
+          echo "=== yt-dlp version ==="
+          yt-dlp --version 2>/dev/null || true
