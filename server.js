@@ -37,7 +37,7 @@ const DEFAULT_DOWNLOAD_FORMAT =
 // resolve the best video+audio pair (up to 4K).
 const DIRECT_DOWNLOAD_FORMAT =
   process.env.DIRECT_DOWNLOAD_FORMAT ||
-  "b[height<=2160]/bv*[height<=2160]+ba/bv*+ba/b";
+  "b[height<=2160]/bv*[height<=2160]+ba[ext=m4a]/bv*[height<=2160]+ba/bv*+ba/b";
 
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)

@@ -733,6 +733,101 @@
       }
     }
 
+    // -----------------------------------------------------------------------
+    // In-browser merge (ffmpeg.wasm). The visitor's browser downloads the two
+    // direct streams and muxes them, which works around the server IP being
+    // blocked by YouTube for media downloads.
+    // -----------------------------------------------------------------------
+    let ffmpegModulePromise = null;
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[src="' + src + '"]');
+
+        if (existing) {
+          if (existing.dataset.loaded === "1") return resolve();
+          existing.addEventListener("load", () => resolve());
+          existing.addEventListener("error", () => reject(new Error("load failed: " + src)));
+          return;
+        }
+
+        const el = document.createElement("script");
+        el.src = src;
+        el.onload = () => { el.dataset.loaded = "1"; resolve(); };
+        el.onerror = () => reject(new Error("load failed: " + src));
+        document.head.appendChild(el);
+      });
+    }
+
+    function getFFmpeg() {
+      if (!ffmpegModulePromise) {
+        ffmpegModulePromise = (async () => {
+          await loadScriptOnce("https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js");
+          await loadScriptOnce("https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js");
+
+          const { FFmpeg } = window.FFmpegWASM;
+          const { toBlobURL } = window.FFmpegUtil;
+          const base = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+          const ffmpeg = new FFmpeg();
+
+          await ffmpeg.load({
+            coreURL: await toBlobURL(base + "/ffmpeg-core.js", "text/javascript"),
+            wasmURL: await toBlobURL(base + "/ffmpeg-core.wasm", "application/wasm")
+          });
+
+          return ffmpeg;
+        })();
+      }
+
+      return ffmpegModulePromise;
+    }
+
+    async function mergeInBrowser(videoUrl, audioUrl, filename, button) {
+      const label = button.textContent;
+      button.disabled = true;
+
+      try {
+        button.textContent = "Loading muxer...";
+        const ffmpeg = await getFFmpeg();
+
+        button.textContent = "Downloading streams...";
+        const responses = await Promise.all([fetch(videoUrl), fetch(audioUrl)]);
+
+        if (!responses[0].ok || !responses[1].ok) {
+          throw new Error("stream fetch failed: " + responses.map((r) => r.status).join("/"));
+        }
+
+        const videoBytes = new Uint8Array(await responses[0].arrayBuffer());
+        const audioBytes = new Uint8Array(await responses[1].arrayBuffer());
+
+        button.textContent = "Merging...";
+        await ffmpeg.writeFile("video.mp4", videoBytes);
+        await ffmpeg.writeFile("audio.bin", audioBytes);
+
+        let code = await ffmpeg.exec(["-i", "video.mp4", "-i", "audio.bin", "-c", "copy", "out.mp4"]);
+
+        if (code !== 0) {
+          code = await ffmpeg.exec(["-i", "video.mp4", "-i", "audio.bin", "-c:v", "copy", "-c:a", "aac", "out.mp4"]);
+        }
+
+        if (code !== 0) throw new Error("ffmpeg exited with code " + code);
+
+        const out = await ffmpeg.readFile("out.mp4");
+        const blob = new Blob([out.buffer], { type: "video/mp4" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename || "video.mp4";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+      } catch (error) {
+        console.error("in-browser merge failed:", error);
+        window.open(videoUrl, "_blank");
+      } finally {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
 
@@ -833,6 +928,16 @@
                 audioBtn.textContent = "Direct audio link";
                 audioBtn.title = info.audioUrl;
                 actions.appendChild(audioBtn);
+
+                const mergeBtn = document.createElement("button");
+                mergeBtn.type = "button";
+                mergeBtn.className = "download-btn";
+                mergeBtn.textContent = "Merge in browser";
+                mergeBtn.title = "Download both streams and mux them here (works around the server IP block)";
+                mergeBtn.addEventListener("click", () => {
+                  mergeInBrowser(info.downloadUrl, info.audioUrl, info.filename, mergeBtn);
+                });
+                actions.appendChild(mergeBtn);
               }
             } else {
               videoBtn.remove();
