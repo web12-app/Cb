@@ -965,6 +965,13 @@
             mergedBtn.textContent = "Download video + audio";
           }
         });
+
+        const localNote = document.createElement("p");
+        localNote.style.cssText =
+          "flex-basis:100%;margin:10px 0 0;color:#8a8f9c;font-size:12px;font-family:ui-monospace,monospace;overflow-wrap:anywhere";
+        localNote.textContent =
+          `Local merge (saves to a path on your machine): node scripts/mix-local.js "${url}"`;
+        actions.appendChild(localNote);
       } catch (error) {
         renderError(error);
       } finally {

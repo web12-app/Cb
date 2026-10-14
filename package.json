@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "cookies": "node scripts/youtube-cookies.js"
+    "cookies": "node scripts/youtube-cookies.js",
+    "mix-local": "node scripts/mix-local.js"
   },
   "engines": {
     "node": ">=20"

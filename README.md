@@ -71,6 +71,15 @@ bot”). Give yt-dlp cookies:
 
 - Or export cookies with a “Get cookies.txt” browser extension and set `YTDLP_COOKIES=<file>`.
 
+### Merge on your own machine
+
+```sh
+node scripts/mix-local.js "https://youtu.be/…" [outputDir]
+```
+
+Resolves the direct video+audio links from the server (`CB_SERVER`, default `http://localhost:3000`),
+downloads them to `outputDir`, merges them with your local `ffmpeg` and prints the output file path.
+
 ## Run locally
 
 ```sh
