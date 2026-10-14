@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   server:
+    name: Node.js + Cloudflare Tunnel
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -23,14 +24,29 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
 
-      - name: Install dependencies
-        run: npm install
+      - name: Validate project files
+        run: |
+          set -e
 
-      - name: Start Node.js server and Cloudflare Tunnel
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found in repository root."
+            exit 1
+          fi
+
+          if [ ! -f server.js ]; then
+            echo "::error::server.js not found in repository root."
+            exit 1
+          fi
+
+          echo "Project files found."
+
+      - name: Install Node.js dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Start Node.js server
         env:
-          PORT: 3000
+          PORT: "3000"
         run: |
           set -e
 
@@ -38,63 +54,135 @@ jobs:
           echo $! > server.pid
 
           echo "Waiting for Node.js server..."
+
+          SERVER_READY=false
+
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:3000/api/health; then
+            if curl --silent --fail \
+              http://127.0.0.1:3000/api/health; then
+              SERVER_READY=true
               break
             fi
+
+            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+              echo "::error::Node.js server exited unexpectedly."
+              cat server.log
+              exit 1
+            fi
+
             sleep 2
           done
 
-          curl -fsS http://localhost:3000/api/health
+          if [ "$SERVER_READY" != "true" ]; then
+            echo "::error::Node.js server did not become ready."
+            cat server.log
+            exit 1
+          fi
 
-          echo "Downloading cloudflared..."
-          curl -fsSL \
+          echo "Node.js server is ready."
+
+      - name: Install Cloudflare Tunnel client
+        run: |
+          set -e
+
+          curl --fail --silent --show-error --location \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o cloudflared
+            --output cloudflared
 
           chmod +x cloudflared
 
-          echo "Starting temporary Cloudflare Tunnel..."
+          ./cloudflared --version
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          set -e
+
           nohup ./cloudflared tunnel \
             --no-autoupdate \
-            --url http://localhost:3000 \
+            --url http://127.0.0.1:3000 \
             > tunnel.log 2>&1 &
 
           echo $! > tunnel.pid
 
-          echo "Waiting for public URL..."
+          echo "Waiting for temporary public URL..."
+
+          TUNNEL_URL=""
+
           for i in $(seq 1 60); do
-            TUNNEL_URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+            TUNNEL_URL=$(
+              grep -Eo \
+                'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+                tunnel.log | head -n 1 || true
+            )
 
             if [ -n "$TUNNEL_URL" ]; then
-              echo "=================================="
-              echo "Cloudflare Tunnel URL: $TUNNEL_URL"
-              echo "=================================="
               break
+            fi
+
+            if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
+              echo "::error::Cloudflare Tunnel exited unexpectedly."
+              cat tunnel.log
+              exit 1
             fi
 
             sleep 2
           done
 
-          if [ -z "${TUNNEL_URL:-}" ]; then
-            echo "Tunnel URL was not generated."
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "::error::Could not obtain a Cloudflare Tunnel URL."
             cat tunnel.log
             exit 1
           fi
 
-          echo "Server and tunnel are running."
-          echo "GitHub Actions runner will keep them alive while this job runs."
+          echo "========================================"
+          echo "Public URL: $TUNNEL_URL"
+          echo "========================================"
 
-          # Keep the workflow alive; GitHub-hosted runners are temporary.
-          while kill -0 "$(cat server.pid)" 2>/dev/null \
-            && kill -0 "$(cat tunnel.pid)" 2>/dev/null; do
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
+
+      - name: Verify public endpoint
+        run: |
+          echo "Testing public health endpoint..."
+
+          for i in $(seq 1 15); do
+            if curl --silent --show-error --fail \
+              --max-time 15 \
+              "$TUNNEL_URL/api/health"; then
+              echo
+              echo "Public endpoint is responding."
+              break
+            fi
+
+            sleep 4
+          done
+
+      - name: Keep server and tunnel running
+        run: |
+          echo "Server and tunnel are running."
+          echo "Temporary URL: $TUNNEL_URL"
+          echo "The URL remains available only while this job is active."
+
+          while true; do
+            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+              echo "::error::Node.js server stopped."
+              cat server.log
+              exit 1
+            fi
+
+            if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
+              echo "::error::Cloudflare Tunnel stopped."
+              cat tunnel.log
+              exit 1
+            fi
+
             sleep 30
           done
 
-      - name: Show logs if the job fails
+      - name: Print logs on failure
         if: failure()
         run: |
-          echo "===== Server log ====="
+          echo "========== SERVER LOG =========="
           cat server.log 2>/dev/null || true
-          echo "===== Tunnel log ====="
+
+          echo "========== TUNNEL LOG =========="
           cat tunnel.log 2>/dev/null || true
