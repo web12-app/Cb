@@ -727,7 +727,27 @@ app.get("/yt", rateLimit, async (req, res) => {
         });
       }
 
-      log("info", "yt.direct", { requestId, ms: Date.now() - started, urls: urls.length });
+      const directFilename = `youtube-${youtubeIdFromUrl(videoUrl) || "video"}.mp4`;
+      const wantJson = ["1", "true", "yes"].includes(
+        String(req.query.json || "").toLowerCase()
+      );
+
+      log("info", "yt.direct", {
+        requestId,
+        ms: Date.now() - started,
+        urls: urls.length,
+        json: wantJson
+      });
+
+      if (wantJson) {
+        return res.json({
+          success: true,
+          requestId,
+          downloadUrl: urls[0],
+          filename: directFilename,
+          urls
+        });
+      }
 
       res.setHeader("Cache-Control", "no-store");
       return res.redirect(302, urls[0]);

@@ -739,6 +739,26 @@
         downloadLink.textContent = "Download video";
         downloadLink.rel = "noopener noreferrer";
         result.appendChild(downloadLink);
+
+        // Resolve the direct CDN link so it can be clicked or copied.
+        const directLink = document.createElement("a");
+        directLink.className = "download-link";
+        directLink.rel = "noopener noreferrer";
+        directLink.textContent = "Resolving direct video link...";
+        result.appendChild(directLink);
+
+        requestJSON(`${API_BASE}/yt?=${encodeURIComponent(url)}&direct=1&json=1`)
+          .then((info) => {
+            if (info && info.success === true && typeof info.downloadUrl === "string") {
+              directLink.href = info.downloadUrl;
+              directLink.textContent = "Direct video link";
+              directLink.title = info.downloadUrl;
+              directLink.setAttribute("download", info.filename || "");
+            } else {
+              directLink.remove();
+            }
+          })
+          .catch(() => directLink.remove());
       } catch (error) {
         renderError(error);
       } finally {
