@@ -1,0 +1,40 @@
+name: Cb Pips Tunnel
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: cb-pips-tunnel
+  cancel-in-progress: true
+jobs:
+  tunnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350      # ~5h50m of live tunnel per run
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: |                  # 1. yt-dlp for the download endpoint
+          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+      - run: npm install --no-audit --no-fund
+      - run: node --check server.js
+      - name: Install Pips client     # 2. bundled in repo, or download
+        run: |
+          if [ -d pips-client ]; then cp -r pips-client/. "$HOME/.pips-tunnel/";
+          else curl -fsSL https://precision-pledge-fled.ngrok-free.dev/tunnel.sh | sh; fi
+      - name: Login                    # 3. your token (secret w/ fallback)
+        env: { TUN_TOKEN: "${{ secrets.TUN_TOKEN }}" }
+        run: '"$HOME/.pips-tunnel/tun" login "${TUN_TOKEN:-tunt_27e1efef4cb85a683b59b70f78d8b6a19b76ef12}"'
+      - run: |                         # 4. Cb server on :3000
+          nohup npm start > logs/server.log 2>&1 &
+          # wait for /api/health...
+      - run: |                         # 5. tunnel live at /tun/yt
+          nohup ~/.pips-tunnel/tun start 3000 yt > /tmp/cb-pips-tunnel.log 2>&1 &
+          # verify registration, print public URL to step summary
+      - run: |                         # 6. test public URL end-to-end
+          # curl https://precision-pledge-fled.ngrok-free.dev/tun/yt/api/health
+      - name: Monitor                  # 7. keep-alive loop until timeout
+          run: 'while true; do ... sleep 30; done'
