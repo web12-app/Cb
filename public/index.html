@@ -363,8 +363,12 @@
     const healthDot = document.getElementById("healthDot");
     const healthText = document.getElementById("healthText");
 
-    // Relative URLs work with localhost and a Cloudflare Tunnel.
-    const API_BASE = window.location.origin;
+    // Works at the domain root (localhost / Cloudflare Tunnel) AND under a
+    // path prefix (Pips Tunnel /tun/<name>): keep the serving directory,
+    // drop only the trailing slash or file name.
+    const API_BASE =
+      window.location.origin +
+      window.location.pathname.replace(/\/(?:index\.html)?$/, "");
     const DOWNLOAD_API = `${API_BASE}/api/download`;
     const HEALTH_API = `${API_BASE}/api/health`;
 
