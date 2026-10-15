@@ -46,7 +46,33 @@ jobs:
           TOKEN="${TUN_TOKEN:-tunt_27e1efef4cb85a683b59b70f78d8b6a19b76ef12}"
           "$HOME/.pips-tunnel/tun" login "$TOKEN"
 
+      - name: Write YouTube cookies (optional)
+        env:
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+        run: |
+          if [ -n "$YTDLP_COOKIES" ]; then
+            printf '%s' "$YTDLP_COOKIES" > /tmp/yt-cookies.txt
+            # If the secret was base64-encoded, decode it.
+            if ! head -n 1 /tmp/yt-cookies.txt | grep -qE '^#.*(Netscape|Cookie File)'; then
+              base64 -d /tmp/yt-cookies.txt > /tmp/yt-cookies.b64 2>/dev/null \
+                && head -n 1 /tmp/yt-cookies.b64 | grep -qE '^#.*(Netscape|Cookie File)' \
+                && mv /tmp/yt-cookies.b64 /tmp/yt-cookies.txt \
+                || rm -f /tmp/yt-cookies.b64
+            fi
+            if head -n 1 /tmp/yt-cookies.txt | grep -qE '^#.*(Netscape|Cookie File)'; then
+              echo "cookies.txt written: $(wc -c < /tmp/yt-cookies.txt) bytes"
+            else
+              echo "WARNING: YTDLP_COOKIES secret set but not a cookies.txt file"
+              rm -f /tmp/yt-cookies.txt
+            fi
+          else
+            echo "No YTDLP_COOKIES secret set — YouTube bot check likely on this datacenter IP."
+            echo "Add the secret to enable logged-in sessions (see README)."
+          fi
+
       - name: Start Cb API Server
+        env:
+          YTDLP_COOKIES_PATH: /tmp/yt-cookies.txt
         run: |
           mkdir -p logs
           nohup npm start > logs/server.log 2>&1 &
