@@ -46,29 +46,93 @@ jobs:
           TOKEN="${TUN_TOKEN:-tunt_27e1efef4cb85a683b59b70f78d8b6a19b76ef12}"
           "$HOME/.pips-tunnel/tun" login "$TOKEN"
 
-      - name: Write YouTube cookies (optional)
+      - name: Harvest browser cookies (Chrome)
         env:
           YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
         run: |
-          if [ -n "$YTDLP_COOKIES" ]; then
-            printf '%s' "$YTDLP_COOKIES" > /tmp/yt-cookies.txt
-            # If the secret was base64-encoded, decode it.
-            if ! head -n 1 /tmp/yt-cookies.txt | grep -qE '^#.*(Netscape|Cookie File)'; then
-              base64 -d /tmp/yt-cookies.txt > /tmp/yt-cookies.b64 2>/dev/null \
-                && head -n 1 /tmp/yt-cookies.b64 | grep -qE '^#.*(Netscape|Cookie File)' \
-                && mv /tmp/yt-cookies.b64 /tmp/yt-cookies.txt \
-                || rm -f /tmp/yt-cookies.b64
-            fi
-            if head -n 1 /tmp/yt-cookies.txt | grep -qE '^#.*(Netscape|Cookie File)'; then
-              echo "cookies.txt written: $(wc -c < /tmp/yt-cookies.txt) bytes"
-            else
-              echo "WARNING: YTDLP_COOKIES secret set but not a cookies.txt file"
-              rm -f /tmp/yt-cookies.txt
-            fi
-          else
-            echo "No YTDLP_COOKIES secret set — YouTube bot check likely on this datacenter IP."
-            echo "Add the secret to enable logged-in sessions (see README)."
+          python3 -m pip install --quiet playwright
+
+          CHROME=""
+          for c in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+            [ -x "$c" ] && CHROME="$c" && break
+          done
+          if [ -z "$CHROME" ]; then
+            python3 -m playwright install chromium
+            CHROME="$(python3 -m playwright install chromium --dry-run 2>/dev/null | grep -oE '[^ ]*chrome-linux[^ ]*' | head -1)"
           fi
+          echo "Using Chrome: ${CHROME:-playwright default}"
+          export CHROME_EXE="$CHROME"
+
+          python3 - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+          import os, sys
+          exe = os.environ.get("CHROME_EXE") or None
+
+          with sync_playwright() as p:
+              launch = {"headless": True,
+                        "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"]}
+              if exe and os.path.exists(exe):
+                  launch["executable_path"] = exe
+              browser = p.chromium.launch(**launch)
+              ctx = browser.new_context(user_agent=UA, locale="en-US")
+              page = ctx.new_page()
+              page.goto("https://www.youtube.com/", wait_until="domcontentloaded", timeout=60000)
+              page.wait_for_timeout(4000)
+              try:
+                  page.goto("https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                            wait_until="domcontentloaded", timeout=60000)
+                  page.wait_for_timeout(5000)
+              except Exception:
+                  pass
+              cookies = ctx.cookies()
+              browser.close()
+
+          def rows(cs):
+              out = []
+              for c in cs:
+                  d = c["domain"]
+                  inc = "TRUE" if d.startswith(".") else "FALSE"
+                  sec = "TRUE" if c.get("secure") else "FALSE"
+                  exp = c.get("expires") or 0
+                  exp = 2147483647 if exp <= 0 else int(exp)
+                  out.append(f"{d}\t{inc}\t{c.get('path','/')}\t{sec}\t{exp}\t{c['name']}\t{c['value']}")
+              return out
+
+          browser_rows = rows(cookies)
+          print(f"browser cookies: {len(browser_rows)}")
+
+          # Merge with account cookies from the secret (account overrides same name).
+          merged = {}
+          order = []
+          for r in browser_rows:
+              key = (r.split("\t")[0], r.split("\t")[5])
+              merged[key] = r
+              order.append(key)
+
+          secret = os.environ.get("YTDLP_COOKIES", "")
+          if secret.strip():
+              for line in secret.splitlines():
+                  if line.startswith("#") or not line.strip():
+                      continue
+                  parts = line.split("\t")
+                  if len(parts) == 7:
+                      key = (parts[0], parts[5])
+                      if key not in merged:
+                          order.append(key)
+                      merged[key] = line
+
+          with open("/tmp/yt-cookies.txt", "w") as f:
+              f.write("# Netscape HTTP Cookie File\n\n")
+              for key in order:
+                  f.write(merged[key] + "\n")
+
+          n = len(open("/tmp/yt-cookies.txt").read().strip().split("\n")) - 2
+          print(f"merged cookies file written: {n} rows")
+          PY
 
       - name: Start Cb API Server
         env:
