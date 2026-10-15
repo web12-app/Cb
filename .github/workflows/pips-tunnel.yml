@@ -11,30 +11,125 @@ concurrency:
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 350      # ~5h50m of live tunnel per run
+    timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "22" }
-      - run: |                  # 1. yt-dlp for the download endpoint
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install yt-dlp
+        run: |
           sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
-      - run: npm install --no-audit --no-fund
-      - run: node --check server.js
-      - name: Install Pips client     # 2. bundled in repo, or download
+          yt-dlp --version
+
+      - name: Install Node dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate project
         run: |
-          if [ -d pips-client ]; then cp -r pips-client/. "$HOME/.pips-tunnel/";
-          else curl -fsSL https://precision-pledge-fled.ngrok-free.dev/tunnel.sh | sh; fi
-      - name: Login                    # 3. your token (secret w/ fallback)
-        env: { TUN_TOKEN: "${{ secrets.TUN_TOKEN }}" }
-        run: '"$HOME/.pips-tunnel/tun" login "${TUN_TOKEN:-tunt_27e1efef4cb85a683b59b70f78d8b6a19b76ef12}"'
-      - run: |                         # 4. Cb server on :3000
+          test -f server.js || { echo "ERROR: server.js not found"; exit 1; }
+          test -d public || { echo "ERROR: public directory not found"; exit 1; }
+          node --check server.js
+
+      - name: Install Pips Tunnel client
+        run: curl -fsSL https://precision-pledge-fled.ngrok-free.dev/tunnel.sh | sh
+
+      - name: Login to Pips Tunnel
+        env:
+          TUN_TOKEN: ${{ secrets.TUN_TOKEN }}
+        run: |
+          TOKEN="${TUN_TOKEN:-tunt_27e1efef4cb85a683b59b70f78d8b6a19b76ef12}"
+          "$HOME/.pips-tunnel/tun" login "$TOKEN"
+
+      - name: Start Cb API Server
+        run: |
+          mkdir -p logs
           nohup npm start > logs/server.log 2>&1 &
-          # wait for /api/health...
-      - run: |                         # 5. tunnel live at /tun/yt
-          nohup ~/.pips-tunnel/tun start 3000 yt > /tmp/cb-pips-tunnel.log 2>&1 &
-          # verify registration, print public URL to step summary
-      - run: |                         # 6. test public URL end-to-end
-          # curl https://precision-pledge-fled.ngrok-free.dev/tun/yt/api/health
-      - name: Monitor                  # 7. keep-alive loop until timeout
-          run: 'while true; do ... sleep 30; done'
+          echo $! > /tmp/cb-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          if ! curl -fsS http://127.0.0.1:3000/api/health; then
+            echo "ERROR: Local API failed to start"
+            cat logs/server.log
+            exit 1
+          fi
+
+      - name: Connect Pips Tunnel
+        run: |
+          nohup "$HOME/.pips-tunnel/tun" start 3000 yt > /tmp/cb-pips-tunnel.log 2>&1 &
+          echo $! > /tmp/cb-pips-tunnel.pid
+          sleep 12
+          cat /tmp/cb-pips-tunnel.log
+          if grep -qiE 'could not register|HTTP 40[049]|error|failed' /tmp/cb-pips-tunnel.log; then
+            echo "ERROR: Tunnel registration failed"
+            exit 1
+          fi
+          PUBLIC_URL="https://precision-pledge-fled.ngrok-free.dev/tun/yt"
+          {
+            echo "## Cb YT API via Pips Tunnel"
+            echo ""
+            echo "Public URL: $PUBLIC_URL"
+            echo "Health: $PUBLIC_URL/api/health"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test public health endpoint
+        run: |
+          PUBLIC_URL="https://precision-pledge-fled.ngrok-free.dev/tun/yt"
+          SUCCESS=0
+          for i in $(seq 1 15); do
+            HTTP_CODE=$(curl -sS --max-time 15 -H 'ngrok-skip-browser-warning: 1' \
+              -o /tmp/cb-public-health.json -w '%{http_code}' \
+              "$PUBLIC_URL/api/health" || true)
+            echo "Attempt $i: HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" = "200" ] && grep -q '"success":true' /tmp/cb-public-health.json 2>/dev/null; then
+              SUCCESS=1
+              break
+            fi
+            sleep 3
+          done
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "ERROR: Public health check failed"
+            cat /tmp/cb-public-health.json 2>/dev/null || true
+            cat /tmp/cb-pips-tunnel.log 2>/dev/null || true
+            exit 1
+          fi
+          cat /tmp/cb-public-health.json
+
+      - name: Monitor (keep tunnel alive)
+        run: |
+          echo "Cb API live via Pips Tunnel: https://precision-pledge-fled.ngrok-free.dev/tun/yt"
+          while true; do
+            if ! kill -0 "$(cat /tmp/cb-server.pid)" 2>/dev/null; then
+              echo "ERROR: Node server stopped"
+              cat logs/server.log
+              exit 1
+            fi
+            if ! kill -0 "$(cat /tmp/cb-pips-tunnel.pid)" 2>/dev/null; then
+              echo "ERROR: Pips tunnel process stopped"
+              cat /tmp/cb-pips-tunnel.log
+              exit 1
+            fi
+            if ! curl -fsS --max-time 5 http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "ERROR: Local health check failed"
+              cat logs/server.log
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Print diagnostics
+        if: always()
+        run: |
+          echo "=== Node server log ==="
+          tail -n 100 logs/server.log 2>/dev/null || true
+          echo "=== Pips tunnel log ==="
+          tail -n 100 /tmp/cb-pips-tunnel.log 2>/dev/null || true
+          echo "=== Tunnel status ==="
+          "$HOME/.pips-tunnel/tun" status 2>/dev/null || true
