@@ -16,6 +16,14 @@ const MAX_STDERR = 64 * 1024;
 const MAX_STDOUT = 5 * 1024 * 1024;
 const YTDLP_TIMEOUT_MS = 60000;
 
+// Extractor args: the tv player client does not trigger YouTube's bot
+// challenge on datacenter IPs (GitHub Actions, Render, Fly, etc.).
+// Override with YTDLP_EXTRACTOR_ARGS="" to restore yt-dlp defaults.
+const YTDLP_EXTRACTOR_ARGS =
+  process.env.YTDLP_EXTRACTOR_ARGS === undefined
+    ? "youtube:player_client=tv,web_safari"
+    : process.env.YTDLP_EXTRACTOR_ARGS;
+
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
 // ---------------------------------------------------------------------------
@@ -105,7 +113,7 @@ const ERROR_PATTERNS = [
     reason: "bot_check",
     re: /confirm you'?re not a bot|not a bot|bot detection|please sign in to continue/i,
     error: "YouTube is blocking this server as automated traffic.",
-    hint: "Datacenter IPs get challenged. Retry later, or run yt-dlp locally.",
+    hint: "The tv player client is already tried first; YouTube may still challenge datacenter IPs. Retry later, or run yt-dlp locally.",
     retryable: true
   },
   {
@@ -343,6 +351,7 @@ app.post("/api/download", rateLimit, (req, res) => {
         "--no-warnings",
         "--no-playlist",
         "--skip-download",
+        ...(YTDLP_EXTRACTOR_ARGS ? ["--extractor-args", YTDLP_EXTRACTOR_ARGS] : []),
         "--",
         videoUrl
       ],
