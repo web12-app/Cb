@@ -2,6 +2,7 @@
 
 const express = require("express");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 
 const app = express();
@@ -23,6 +24,15 @@ const YTDLP_EXTRACTOR_ARGS =
   process.env.YTDLP_EXTRACTOR_ARGS === undefined
     ? "youtube:player_client=tv,web_safari"
     : process.env.YTDLP_EXTRACTOR_ARGS;
+
+// Optional YouTube cookies (Netscape cookies.txt format) to bypass the
+// datacenter-IP bot check with a logged-in session. Set YTDLP_COOKIES_PATH
+// to the file location; exported via a GitHub Actions secret.
+const YTDLP_COOKIES_PATH = process.env.YTDLP_COOKIES_PATH || "";
+const YTDLP_COOKIES_ARGS =
+  YTDLP_COOKIES_PATH && fs.existsSync(YTDLP_COOKIES_PATH)
+    ? ["--cookies", YTDLP_COOKIES_PATH]
+    : [];
 
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
@@ -113,7 +123,7 @@ const ERROR_PATTERNS = [
     reason: "bot_check",
     re: /confirm you'?re not a bot|not a bot|bot detection|please sign in to continue/i,
     error: "YouTube is blocking this server as automated traffic.",
-    hint: "The tv player client is already tried first; YouTube may still challenge datacenter IPs. Retry later, or run yt-dlp locally.",
+    hint: "Set the YTDLP_COOKIES secret (cookies.txt export) so the server uses a logged-in session; cookies bypass the datacenter-IP bot check.",
     retryable: true
   },
   {
@@ -352,6 +362,7 @@ app.post("/api/download", rateLimit, (req, res) => {
         "--no-playlist",
         "--skip-download",
         ...(YTDLP_EXTRACTOR_ARGS ? ["--extractor-args", YTDLP_EXTRACTOR_ARGS] : []),
+        ...YTDLP_COOKIES_ARGS,
         "--",
         videoUrl
       ],
