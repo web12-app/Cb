@@ -34,6 +34,10 @@ const YTDLP_COOKIES_ARGS =
     ? ["--cookies", YTDLP_COOKIES_PATH]
     : [];
 
+// A JS runtime is required by modern yt-dlp for YouTube's JS challenge.
+// node is guaranteed present in the Actions workflow and local dev.
+const YTDLP_JS_ARGS = ["--js-runtimes", "node"];
+
 // ---------------------------------------------------------------------------
 // Structured JSON logger -> stdout (the workflow captures this in server.log)
 // ---------------------------------------------------------------------------
@@ -363,6 +367,7 @@ app.post("/api/download", rateLimit, (req, res) => {
         "--skip-download",
         ...(YTDLP_EXTRACTOR_ARGS ? ["--extractor-args", YTDLP_EXTRACTOR_ARGS] : []),
         ...YTDLP_COOKIES_ARGS,
+        ...YTDLP_JS_ARGS,
         "--",
         videoUrl
       ],
